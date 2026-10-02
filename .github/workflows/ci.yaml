@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+
+      - name: Setup toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "pythia/gh-actions-cache"
+
+      - name: Run rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features
+
+      - name: Run test
+        run: cargo test --verbose
+
+  build:
+    name: build (${{ matrix.job.target }})
+    runs-on: ${{ matrix.job.os || 'ubuntu-24.04' }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            use-cross: false
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            use-cross: true
+          - os: macos-15
+            target: aarch64-apple-darwin
+            use-cross: false
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            use-cross: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.job.target }}
+
+      - name: Setup cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "pythia/gh-actions-cache"
+
+      - name: Install cross
+        if: matrix.job.use-cross
+        run: cargo install cross
+
+      # note: In Ubuntu-latest (Ubuntu 24), musl-tools has disappeared, so it must be installed separately.
+      - name: Install musl-gcc
+        if: matrix.job.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: |
+          cargo build --verbose --target ${{ matrix.job.target }}
