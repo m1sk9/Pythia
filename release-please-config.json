@@ -1,5 +1,6 @@
 {
   "last-release-sha": "d0c1cf03d97dcef07b4726aa8f93e5dbadff6c19",
+  "include-component-in-tag": false,
   "packages": {
     ".": {
       "release-type": "rust",
