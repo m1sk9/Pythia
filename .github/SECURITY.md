@@ -6,7 +6,7 @@ A Guide to Pythia's Security Policy.
 
 Only the latest version of v3 is supported. Vulnerabilities are fixed only in updates to the latest version and **not backported to older versions**.
 
-v2 and earlier (released as ichiyoAI under the Approvers organization) are **no longer supported** and will not receive any security fixes.
+v2 and earlier (released as ichiyoAI under the Approvers organization) are **deprecated**. They may still work, but they are no longer under the control of [@m1sk9](https://github.com/m1sk9) and will not receive any security fixes. Use them at your own risk.
 
 Also, because of the possibility of destructive changes without prior notice, updates may change the behavior of the software and may cause incompatibility. Always check the patch notes.
 
