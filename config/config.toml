@@ -1,0 +1,51 @@
+### Pythia configuration file ###
+# Point CONFIG_FILE_PATH at this file. Secrets come from the environment:
+#   DISCORD_API_TOKEN, OPENROUTER_API_KEY
+
+[discord]
+## Guilds where Pythia responds. Empty means nowhere.
+allowed_guilds = [123456789012345678]
+
+[llm]
+## v3.0.0 supports OpenRouter only.
+provider = "openrouter"
+## Required. Pythia refuses to start without it (models differ widely in price).
+model = "<openrouter model id>"
+## System prompt: either inline or from a file. Setting both is an error.
+system_prompt = "You are Pythia, a helpful assistant on Discord."
+# system_prompt_file = "/config/system_prompt.md"
+max_output_tokens = 4096
+timeout_secs = 120
+## Retries apply to 429 / 5xx / connection errors only.
+max_retries = 2
+
+[context]
+## Thread messages fetched per turn (Discord allows at most 100 per request).
+max_messages = 100
+## Character budget for the whole context; newest messages win.
+max_chars = 32000
+
+[response]
+## Maximum number of 2000-char messages per answer. Excess is cut with a note.
+max_parts = 5
+
+[attachments]
+## Disabled automatically when the model does not accept images.
+images = true
+max_images = 4
+recent_messages = 5
+max_image_bytes = 5242880
+
+[thread]
+## Used in thread names: "{display name} · {YYYY-MM-DD HH:mm}"
+timezone = "Asia/Tokyo"
+
+[limits]
+## Concurrent generations across all threads.
+max_concurrent = 4
+
+[log]
+## Same syntax as RUST_LOG; RUST_LOG takes precedence when set.
+level = "pythia=info"
+## "compact" or "json"
+format = "compact"
