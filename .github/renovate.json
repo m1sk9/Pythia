@@ -1,9 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
-  ],
-  "addLabels": [
-    "renovate"
-  ]
+  "extends": ["github>m1sk9/renovate-config"]
 }
