@@ -1,9 +1,14 @@
 {
-  "last-release-sha": "37b4260da6fa7034ca146d8e4a5cd00c283c8540",
+  "last-release-sha": "d0c1cf03d97dcef07b4726aa8f93e5dbadff6c19",
   "packages": {
     ".": {
       "release-type": "rust",
-      "package-name": "ichiyo_ai"
+      "changelog-sections": [
+        { "type": "feat", "section": "Features" },
+        { "type": "fix", "section": "Bug Fixes" },
+        { "type": "chore", "section": "Miscellaneous" },
+        { "type": "ci", "section": "CI" }
+      ]
     }
   }
 }
