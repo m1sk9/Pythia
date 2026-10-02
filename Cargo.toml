@@ -1,46 +1,32 @@
 [package]
-name = "ichiyo_ai"
+name = "pythia"
 version = "2.4.1"
-edition = "2021"
+edition = "2024"
+rust-version = "1.89"
 license = "Apache-2.0"
-repository = "https://github.com/approvers/ichiyoAI"
-
-[[bin]]
-name = "ichiyo_ai"
-path = "src/bin/main/main.rs"
-
-[lib]
-path = "src/lib/lib.rs"
+repository = "https://github.com/m1sk9/Pythia"
+readme = "README.md"
+description = "A Discord bot that bridges your server and LLM APIs."
 
 [dependencies]
-dotenvy = "0.15.7"
-tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
-envy = "0.4.2"
-serde_json = "1.0.116"
-base64 = "0.22.1"
-tokio-stream = "0.1.15"
+anyhow = "1.0"
+base64 = "0.23"
+dotenvy = "0.15"
+envy = "0.4"
+jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
+reqwest = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+toml = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+twilight-cache-inmemory = "0.17"
+twilight-gateway = "0.17"
+twilight-http = "0.17"
+twilight-model = "0.17"
+twilight-util = { version = "0.17", features = ["builder"] }
 
-[dependencies.reqwest]
-version = "0.12.4"
-features = ["rustls-tls", "charset", "http2", "macos-system-configuration"]
-default-features = false
-
-[dependencies.sentry]
-version = "0.34.0"
-# do not use `transport` feature. it pulls `native-tls`
-features = ["backtrace", "contexts", "debug-images", "panic", "reqwest", "rustls"]
-default-features = false
-
-[dependencies.serenity]
-version = "0.12.1"
-features = ["client", "gateway", "model", "cache", "rustls_backend", "framework", "standard_framework"]
-default-features = false
-
-[dependencies.serde]
-version = "1.0.200"
-features = ["derive"]
-
-[dependencies.tokio]
-version = "1.38"
-features = ["macros", "rt-multi-thread", "time"]
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
