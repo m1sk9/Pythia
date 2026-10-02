@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::debug!(?config, config_file_path = %envs.config_file_path, "resolved configuration");
     if config.discord.allowed_guilds.is_empty() {
-        tracing::warn!("discord.allowed_guilds is empty; Pythia will not respond anywhere");
+        anyhow::bail!("discord.allowed_guilds is empty");
     }
 
     let _http = twilight_http::Client::new(envs.discord_api_token.clone());
