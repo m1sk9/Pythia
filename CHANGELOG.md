@@ -1,5 +1,65 @@
 # Changelog
 
+## [3.0.0](https://github.com/m1sk9/Pythia/compare/v2.4.1...v3.0.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* The project is relicensed from MIT to Apache-2.0, Docker images move from ghcr.io/approvers/ichiyo_ai to ghcr.io/m1sk9/pythia, and v2 and earlier (ichiyoAI) are deprecated and no longer supported.
+
+### Miscellaneous
+
+* change base renovate config ([#249](https://github.com/m1sk9/Pythia/issues/249)) ([4ea5146](https://github.com/m1sk9/Pythia/commit/4ea5146cf5b7a446d706c4cc4a3c1074b0b6be47))
+* **deps:** bump h2 from 0.3.24 to 0.3.26 ([#221](https://github.com/m1sk9/Pythia/issues/221)) ([d3c2e61](https://github.com/m1sk9/Pythia/commit/d3c2e61aeeb17011e0a68f0710bccb9073f142bf))
+* **deps:** bump openssl from 0.10.62 to 0.10.66 ([#258](https://github.com/m1sk9/Pythia/issues/258)) ([3e01388](https://github.com/m1sk9/Pythia/commit/3e01388d17e7a4a63a604df8d9c19f172f46d7a8))
+* **deps:** bump openssl from 0.10.66 to 0.10.79 ([#265](https://github.com/m1sk9/Pythia/issues/265)) ([c65b55d](https://github.com/m1sk9/Pythia/commit/c65b55d04fd62607e65c72383b9870979f7563c8))
+* **deps:** bump rustls from 0.21.6 to 0.21.11 ([#226](https://github.com/m1sk9/Pythia/issues/226)) ([a4f2efb](https://github.com/m1sk9/Pythia/commit/a4f2efb016b7148d6186faf0af489fccba80fc56))
+* **deps:** bump tokio from 1.38.0 to 1.38.2 ([#267](https://github.com/m1sk9/Pythia/issues/267)) ([9bc403f](https://github.com/m1sk9/Pythia/commit/9bc403f69f97a80c0b66838def7915e930d9681a))
+* **deps:** update docker/build-push-action action to v6 ([#251](https://github.com/m1sk9/Pythia/issues/251)) ([7fd09ca](https://github.com/m1sk9/Pythia/commit/7fd09ca7312360517da82518a9c9a3701fee4475))
+* **deps:** update docker/setup-buildx-action action to v3.2.0 ([#217](https://github.com/m1sk9/Pythia/issues/217)) ([2a05ae0](https://github.com/m1sk9/Pythia/commit/2a05ae0d532604af07cbfe033b1519de011abae6))
+* **deps:** update docker/setup-buildx-action action to v3.3.0 ([#224](https://github.com/m1sk9/Pythia/issues/224)) ([54d1dbe](https://github.com/m1sk9/Pythia/commit/54d1dbef93a60bf6f35d2772832a5a3b6810c7aa))
+* **deps:** update peaceiris/actions-gh-pages action to v4 ([#252](https://github.com/m1sk9/Pythia/issues/252)) ([857b5b7](https://github.com/m1sk9/Pythia/commit/857b5b7d4663877d851dd0d1e72691caf4ff4c89))
+* **deps:** update peaceiris/actions-mdbook action to v2 ([#253](https://github.com/m1sk9/Pythia/issues/253)) ([49c4207](https://github.com/m1sk9/Pythia/commit/49c4207fc0a5a59a1c17cebab65771ff4b66edd5))
+* **deps:** update rust crate base64 to 0.22.1 ([#227](https://github.com/m1sk9/Pythia/issues/227)) ([1b08825](https://github.com/m1sk9/Pythia/commit/1b08825669ba9051c62a353c050a8e3cb546524e))
+* **deps:** update rust crate dotenvy to 0.15.7 ([#228](https://github.com/m1sk9/Pythia/issues/228)) ([b84e814](https://github.com/m1sk9/Pythia/commit/b84e814e88a286f99831d04eb722df6808c5367b))
+* **deps:** update rust crate envy to 0.4.2 ([#229](https://github.com/m1sk9/Pythia/issues/229)) ([973efba](https://github.com/m1sk9/Pythia/commit/973efba2d1f729e5ee0d05f5de58da934cc063ce))
+* **deps:** update rust crate jiff to v0.2.37 ([#299](https://github.com/m1sk9/Pythia/issues/299)) ([db5b28c](https://github.com/m1sk9/Pythia/commit/db5b28c56ca93441a7c919af5afe392a14ecffb4))
+* **deps:** update rust crate reqwest to 0.12 ([#218](https://github.com/m1sk9/Pythia/issues/218)) ([6a45071](https://github.com/m1sk9/Pythia/commit/6a45071a73e56f0e0481e75875c161b838ae369c))
+* **deps:** update rust crate reqwest to 0.12.4 ([#230](https://github.com/m1sk9/Pythia/issues/230)) ([228dcca](https://github.com/m1sk9/Pythia/commit/228dcca20c11ea1316019e36012edaefaa933088))
+* **deps:** update rust crate sentry to 0.32.3 ([#231](https://github.com/m1sk9/Pythia/issues/231)) ([ee7294d](https://github.com/m1sk9/Pythia/commit/ee7294d2b16003bb5e4b16cea643e01f5206bc91))
+* **deps:** update rust crate sentry to 0.33.0 ([#243](https://github.com/m1sk9/Pythia/issues/243)) ([74b19f4](https://github.com/m1sk9/Pythia/commit/74b19f4b65ee36b119cd64257ea04b60608a0f33))
+* **deps:** update rust crate sentry to 0.34.0 ([#246](https://github.com/m1sk9/Pythia/issues/246)) ([7c573d4](https://github.com/m1sk9/Pythia/commit/7c573d46a8e4980d7fdce6a36d8b3a17d9332df1))
+* **deps:** update rust crate serde to 1.0.200 ([#232](https://github.com/m1sk9/Pythia/issues/232)) ([34a1e9b](https://github.com/m1sk9/Pythia/commit/34a1e9bbcc741f151e4be33bf913dde194dd3a5e))
+* **deps:** update rust crate serde to v1.0.201 ([#239](https://github.com/m1sk9/Pythia/issues/239)) ([08e053d](https://github.com/m1sk9/Pythia/commit/08e053d326ec18225a18702314157e619f1b2e64))
+* **deps:** update rust crate serde to v1.0.202 ([#241](https://github.com/m1sk9/Pythia/issues/241)) ([8cff169](https://github.com/m1sk9/Pythia/commit/8cff1690083a6729ec2f2fbc9675d86f9c33cb82))
+* **deps:** update rust crate serde to v1.0.203 ([#242](https://github.com/m1sk9/Pythia/issues/242)) ([7491aab](https://github.com/m1sk9/Pythia/commit/7491aabc82ab1a2ed18d427e1a94c4582d80fa96))
+* **deps:** update rust crate serde to v1.0.229 ([#283](https://github.com/m1sk9/Pythia/issues/283)) ([78b600f](https://github.com/m1sk9/Pythia/commit/78b600fbce719f2b887aadffedef57a1a009eb7c))
+* **deps:** update rust crate serde_json to 1.0.116 ([#233](https://github.com/m1sk9/Pythia/issues/233)) ([732eca8](https://github.com/m1sk9/Pythia/commit/732eca89d14d7a8829baed766772830c9d3e7c48))
+* **deps:** update rust crate serde_json to v1.0.117 ([#240](https://github.com/m1sk9/Pythia/issues/240)) ([c62b2c1](https://github.com/m1sk9/Pythia/commit/c62b2c14ead88cfe7931f58e195ddeb2067047b6))
+* **deps:** update rust crate serde_json to v1.0.151 ([#254](https://github.com/m1sk9/Pythia/issues/254)) ([efd5611](https://github.com/m1sk9/Pythia/commit/efd56117a22b5559d530e180d96a35de84cde7f5))
+* **deps:** update rust crate serenity to 0.12.1 ([#234](https://github.com/m1sk9/Pythia/issues/234)) ([bcad52b](https://github.com/m1sk9/Pythia/commit/bcad52b96c4f2a43ba05fd3eef1f08332537a754))
+* **deps:** update rust crate serenity to v0.12.2 ([#245](https://github.com/m1sk9/Pythia/issues/245)) ([b9a45c9](https://github.com/m1sk9/Pythia/commit/b9a45c97b3d7a6261812de01f657cbed477b2b9b))
+* **deps:** update rust crate tokio to 1.37 ([#220](https://github.com/m1sk9/Pythia/issues/220)) ([cb441b8](https://github.com/m1sk9/Pythia/commit/cb441b888ad759f823cc8bb583feb6a6da79fe20))
+* **deps:** update rust crate tokio to v1.38.0 ([#244](https://github.com/m1sk9/Pythia/issues/244)) ([f540715](https://github.com/m1sk9/Pythia/commit/f5407151a55757c09c63c5cb21ef5c9bca9c0106))
+* **deps:** update rust crate tokio to v1.53.2 ([#279](https://github.com/m1sk9/Pythia/issues/279)) ([a87b906](https://github.com/m1sk9/Pythia/commit/a87b90613258acb05763ab4fb17883d2ef5bfa77))
+* **deps:** update rust crate tokio-stream to 0.1.15 ([#235](https://github.com/m1sk9/Pythia/issues/235)) ([a69d386](https://github.com/m1sk9/Pythia/commit/a69d3868296e3a5494c57d1d22fc11c493af6b11))
+* **deps:** update rust crate tracing to 0.1.40 ([#236](https://github.com/m1sk9/Pythia/issues/236)) ([065698f](https://github.com/m1sk9/Pythia/commit/065698f388de1b37d55a9b4f8bf5537ad5b6f674))
+* **deps:** update rust crate tracing-subscriber to 0.3.18 ([#237](https://github.com/m1sk9/Pythia/issues/237)) ([98cd6f6](https://github.com/m1sk9/Pythia/commit/98cd6f637d95d7d5bd7ceb87638befdc780a6210))
+* **deps:** update rust docker tag to v1.77.0 ([#219](https://github.com/m1sk9/Pythia/issues/219)) ([f85574b](https://github.com/m1sk9/Pythia/commit/f85574bc0228c6b8c0946b3e6aef21628f50b94e))
+* **deps:** update rust docker tag to v1.77.1 ([#222](https://github.com/m1sk9/Pythia/issues/222)) ([12b77a3](https://github.com/m1sk9/Pythia/commit/12b77a3970e6b840e95230988cd127833eadf640))
+* **deps:** update rust docker tag to v1.77.2 ([#223](https://github.com/m1sk9/Pythia/issues/223)) ([b3a6516](https://github.com/m1sk9/Pythia/commit/b3a65162b49643e7cffc44e7e0a0ca57d89aa09a))
+* **deps:** update rust docker tag to v1.78.0 ([#238](https://github.com/m1sk9/Pythia/issues/238)) ([a72368d](https://github.com/m1sk9/Pythia/commit/a72368de5d36eeb6a350b009cb7a3d803872c023))
+* **deps:** update rust docker tag to v1.79.0 ([#247](https://github.com/m1sk9/Pythia/issues/247)) ([6209623](https://github.com/m1sk9/Pythia/commit/6209623d658270fc6e84d6bae3bb637e9d68998c))
+* **deps:** update rust docker tag to v1.99.0 ([#259](https://github.com/m1sk9/Pythia/issues/259)) ([a3bc19f](https://github.com/m1sk9/Pythia/commit/a3bc19f8b97081445bc7415d4339f57c058036d9))
+* **deps:** update tokio-tracing monorepo ([#282](https://github.com/m1sk9/Pythia/issues/282)) ([5cd78a3](https://github.com/m1sk9/Pythia/commit/5cd78a34263b677cc8e1642aaaa494eccf1586a3))
+* migrate maintenance from Approvers to m1sk9 and relicense under Apache-2.0 ([#287](https://github.com/m1sk9/Pythia/issues/287)) ([6b032e3](https://github.com/m1sk9/Pythia/commit/6b032e37dc47887bbcab47b658bbcb2d038dcb59))
+* remove obsolete CODEOWNERS file ([#278](https://github.com/m1sk9/Pythia/issues/278)) ([0ec37b3](https://github.com/m1sk9/Pythia/commit/0ec37b39ca28070c2752e65a947654a5c2f50764))
+
+
+### CI
+
+* drop package name from release tags ([#289](https://github.com/m1sk9/Pythia/issues/289)) ([b45663b](https://github.com/m1sk9/Pythia/commit/b45663b02dda13f22821f4da646b493a17c0299f))
+
 ## [2.4.1](https://github.com/approvers/ichiyoAI/compare/ichiyo_ai-v2.4.0...ichiyo_ai-v2.4.1) (2024-03-06)
 
 
