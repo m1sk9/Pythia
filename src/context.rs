@@ -1,0 +1,610 @@
+//! Turns thread history into the chat messages sent to the model.
+//!
+//! Everything here is pure: the orchestrator fetches the messages and passes
+//! them in, so the rules can be tested without Discord.
+
+use crate::llm::{ChatMessage, Content, Role};
+use twilight_model::{
+    channel::{
+        Attachment, Message,
+        message::{Mention, MessageType},
+    },
+    id::{
+        Id,
+        marker::{MessageMarker, UserMarker},
+    },
+};
+
+const TRUNCATION_MARKER: &str = " …(truncated)";
+const IMAGE_MIME_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+/// What [`build_context`] reads.
+pub struct ContextInput<'a> {
+    /// Thread messages as returned by Discord, newest first.
+    pub history_newest_first: &'a [Message],
+    /// The parent-channel message the thread was started from, if any.
+    pub starter: Option<&'a Message>,
+    pub bot_id: Id<UserMarker>,
+    /// Character budget for all messages; the system prompt does not count.
+    pub max_chars: usize,
+}
+
+/// The conversation to send, oldest first, and the message to reply to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltContext {
+    pub messages: Vec<ChatMessage>,
+    /// The newest user message that made it into `messages`.
+    pub reply_to: Id<MessageMarker>,
+}
+
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum ContextError {
+    #[error("the thread has no user message to answer")]
+    NoUserMessage,
+}
+
+/// A message after filtering, before trimming.
+struct Entry {
+    role: Role,
+    text: String,
+    id: Id<MessageMarker>,
+}
+
+/// Builds the chat messages for one turn.
+pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextError> {
+    let starter = input.starter.filter(|starter| {
+        input
+            .history_newest_first
+            .iter()
+            .all(|m| m.id != starter.id)
+    });
+    let chronological = starter
+        .into_iter()
+        .chain(input.history_newest_first.iter().rev());
+
+    let mut entries: Vec<Entry> = Vec::new();
+    for message in chronological {
+        let Some(entry) = to_entry(message, input.bot_id) else {
+            continue;
+        };
+        match entries.last_mut() {
+            Some(last) if last.role == Role::Assistant && entry.role == Role::Assistant => {
+                last.text.push('\n');
+                last.text.push_str(&entry.text);
+            }
+            _ => entries.push(entry),
+        }
+    }
+
+    let kept = trim_to_budget(entries, input.max_chars);
+    let reply_to = kept
+        .iter()
+        .rev()
+        .find(|entry| entry.role == Role::User)
+        .map(|entry| entry.id)
+        .ok_or(ContextError::NoUserMessage)?;
+
+    Ok(BuiltContext {
+        messages: kept
+            .into_iter()
+            .map(|entry| ChatMessage {
+                role: entry.role,
+                content: Content::Text(entry.text),
+            })
+            .collect(),
+        reply_to,
+    })
+}
+
+fn to_entry(message: &Message, bot_id: Id<UserMarker>) -> Option<Entry> {
+    let author = &message.author;
+    if author.system == Some(true)
+        || (author.bot && author.id != bot_id)
+        || !matches!(message.kind, MessageType::Regular | MessageType::Reply)
+    {
+        return None;
+    }
+
+    if author.id == bot_id {
+        return (!message.content.is_empty()).then(|| Entry {
+            role: Role::Assistant,
+            text: message.content.clone(),
+            id: message.id,
+        });
+    }
+
+    let content = strip_mentions(&message.content, bot_id, &message.mentions);
+    if content.is_empty() && message.attachments.is_empty() {
+        return None;
+    }
+    let body: Vec<String> = (!content.is_empty())
+        .then_some(content)
+        .into_iter()
+        .chain(message.attachments.iter().map(attachment_placeholder))
+        .collect();
+    Some(Entry {
+        role: Role::User,
+        text: format!("{}: {}", display_name(message), body.join("\n")),
+        id: message.id,
+    })
+}
+
+/// Keeps the newest entries that fit in `max_chars`, oldest first.
+fn trim_to_budget(mut entries: Vec<Entry>, max_chars: usize) -> Vec<Entry> {
+    let Some(mut newest) = entries.pop() else {
+        return entries;
+    };
+    let newest_chars = newest.text.chars().count();
+    if newest_chars > max_chars {
+        newest.text = newest.text.chars().take(max_chars).collect();
+        newest.text.push_str(TRUNCATION_MARKER);
+    }
+
+    let mut used = newest_chars.min(max_chars);
+    let mut kept = vec![newest];
+    while let Some(entry) = entries.pop() {
+        let chars = entry.text.chars().count();
+        if used + chars > max_chars {
+            break;
+        }
+        used += chars;
+        kept.push(entry);
+    }
+    kept.reverse();
+    kept
+}
+
+/// The name shown for the author: server nickname, then global name, then username.
+pub fn display_name(message: &Message) -> &str {
+    message
+        .member
+        .as_ref()
+        .and_then(|member| member.nick.as_deref())
+        .or(message.author.global_name.as_deref())
+        .unwrap_or(&message.author.name)
+}
+
+/// Removes mentions of the bot and replaces other user mentions with `@name`.
+/// Mentions of users missing from `mentions`, channels, and roles are kept as is.
+pub fn strip_mentions(content: &str, bot_id: Id<UserMarker>, mentions: &[Mention]) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("<@") {
+        out.push_str(&rest[..start]);
+        let candidate = &rest[start..];
+        match parse_user_mention(candidate) {
+            Some((id, len)) if id == bot_id => rest = &candidate[len..],
+            Some((id, len)) => {
+                match mentions.iter().find(|mention| mention.id == id) {
+                    Some(mention) => {
+                        out.push('@');
+                        out.push_str(mention_name(mention));
+                    }
+                    None => out.push_str(&candidate[..len]),
+                }
+                rest = &candidate[len..];
+            }
+            None => {
+                out.push_str("<@");
+                rest = &candidate[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
+/// Parses a leading `<@ID>` or `<@!ID>`, returning the id and the length consumed.
+fn parse_user_mention(s: &str) -> Option<(Id<UserMarker>, usize)> {
+    let after = s.strip_prefix("<@")?;
+    let (digits, prefix_len) = match after.strip_prefix('!') {
+        Some(digits) => (digits, 3),
+        None => (after, 2),
+    };
+    let end = digits.find('>')?;
+    let id = Id::new_checked(digits[..end].parse().ok()?)?;
+    Some((id, prefix_len + end + 1))
+}
+
+fn mention_name(mention: &Mention) -> &str {
+    mention
+        .member
+        .as_ref()
+        .and_then(|member| member.nick.as_deref())
+        .unwrap_or(&mention.name)
+}
+
+/// The text line that stands in for an attachment.
+pub fn attachment_placeholder(attachment: &Attachment) -> String {
+    let kind = if is_image_attachment(attachment) {
+        "image"
+    } else {
+        "attachment"
+    };
+    format!("[{kind}: {}]", attachment.filename)
+}
+
+/// Whether the attachment is a PNG, JPEG, WebP, or GIF image, judged by its
+/// content type, or by its extension when Discord reports none.
+pub fn is_image_attachment(attachment: &Attachment) -> bool {
+    match &attachment.content_type {
+        Some(content_type) => {
+            let mime = content_type.split(';').next().unwrap_or_default().trim();
+            IMAGE_MIME_TYPES
+                .iter()
+                .any(|image| image.eq_ignore_ascii_case(mime))
+        }
+        None => attachment
+            .filename
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| {
+                IMAGE_EXTENSIONS
+                    .iter()
+                    .any(|image| image.eq_ignore_ascii_case(extension))
+            }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    const BOT: u64 = 1000;
+    const ALICE: u64 = 2000;
+    const BOB: u64 = 3000;
+
+    fn user_json(id: u64, name: &str) -> Value {
+        json!({"id": id.to_string(), "username": name, "discriminator": "0", "avatar": null})
+    }
+
+    /// A regular message with the fields `build_context` reads; adjust the rest per test.
+    fn message(id: u64, author_id: u64, content: &str) -> Message {
+        let name = match author_id {
+            BOT => "pythia",
+            ALICE => "alice",
+            BOB => "bob",
+            _ => "someone",
+        };
+        let mut author = user_json(author_id, name);
+        if author_id == BOT {
+            author["bot"] = json!(true);
+        }
+        serde_json::from_value(json!({
+            "id": id.to_string(),
+            "channel_id": "1",
+            "author": author,
+            "content": content,
+            "timestamp": "2026-10-02T14:40:00.000000+00:00",
+            "edited_timestamp": null,
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0,
+        }))
+        .unwrap()
+    }
+
+    fn mention(id: u64, name: &str, nick: Option<&str>) -> Mention {
+        let mut value = user_json(id, name);
+        value["public_flags"] = json!(0);
+        if let Some(nick) = nick {
+            value["member"] = json!({
+                "deaf": false, "mute": false, "flags": 0, "joined_at": null,
+                "communication_disabled_until": null, "roles": [], "nick": nick,
+            });
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn attachment(filename: &str, content_type: Option<&str>) -> Attachment {
+        serde_json::from_value(json!({
+            "id": "1",
+            "filename": filename,
+            "content_type": content_type,
+            "size": 1024,
+            "url": "https://cdn.discordapp.com/attachments/1/1/file",
+            "proxy_url": "https://media.discordapp.net/attachments/1/1/file",
+        }))
+        .unwrap()
+    }
+
+    fn build(history_newest_first: &[Message], starter: Option<&Message>) -> BuiltContext {
+        build_with_budget(history_newest_first, starter, 32_000).unwrap()
+    }
+
+    fn build_with_budget(
+        history_newest_first: &[Message],
+        starter: Option<&Message>,
+        max_chars: usize,
+    ) -> Result<BuiltContext, ContextError> {
+        build_context(ContextInput {
+            history_newest_first,
+            starter,
+            bot_id: Id::new(BOT),
+            max_chars,
+        })
+    }
+
+    fn texts(context: &BuiltContext) -> Vec<(Role, &str)> {
+        context
+            .messages
+            .iter()
+            .map(|message| match &message.content {
+                Content::Text(text) => (message.role, text.as_str()),
+                Content::Parts(_) => panic!("unexpected parts: {message:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn history_is_returned_oldest_first_with_bot_messages_as_assistant() {
+        let history = [
+            message(4, BOT, "answer 2"),
+            message(3, ALICE, "question 2"),
+            message(2, BOT, "answer 1"),
+            message(1, ALICE, "question 1"),
+        ];
+
+        assert_eq!(
+            texts(&build(&history, None)),
+            [
+                (Role::User, "alice: question 1"),
+                (Role::Assistant, "answer 1"),
+                (Role::User, "alice: question 2"),
+                (Role::Assistant, "answer 2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn speaker_label_prefers_nick_then_global_name_then_username() {
+        let mut nick = message(3, ALICE, "a");
+        nick.author.global_name = Some("Alice Global".to_string());
+        nick.member = mention(ALICE, "alice", Some("Ali")).member;
+        let mut global = message(2, ALICE, "b");
+        global.author.global_name = Some("Alice Global".to_string());
+        let username = message(1, ALICE, "c");
+
+        assert_eq!(
+            texts(&build(&[nick, global, username], None)),
+            [
+                (Role::User, "alice: c"),
+                (Role::User, "Alice Global: b"),
+                (Role::User, "Ali: a"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bot_mentions_are_removed_and_user_mentions_become_names() {
+        let mentions = [
+            mention(BOT, "pythia", None),
+            mention(BOB, "bob", Some("Bobby")),
+        ];
+
+        assert_eq!(
+            strip_mentions(
+                "  <@1000> ask <@!3000> about <@!1000>it  ",
+                Id::new(BOT),
+                &mentions
+            ),
+            "ask @Bobby about it"
+        );
+        assert_eq!(
+            strip_mentions("<@3000>", Id::new(BOT), &[mention(BOB, "bob", None)]),
+            "@bob"
+        );
+    }
+
+    #[test]
+    fn unknown_user_channel_and_role_mentions_are_kept() {
+        assert_eq!(
+            strip_mentions("<@4000> in <#5> for <@&6> or <@> <@x>", Id::new(BOT), &[]),
+            "<@4000> in <#5> for <@&6> or <@> <@x>"
+        );
+    }
+
+    #[test]
+    fn consecutive_bot_messages_merge_into_one_assistant_message() {
+        let history = [
+            message(6, ALICE, "next"),
+            message(5, BOT, "part 3"),
+            message(4, ALICE, "thanks"),
+            message(3, BOT, "part 2"),
+            message(2, BOT, "part 1"),
+            message(1, ALICE, "question"),
+        ];
+
+        assert_eq!(
+            texts(&build(&history, None)),
+            [
+                (Role::User, "alice: question"),
+                (Role::Assistant, "part 1\npart 2"),
+                (Role::User, "alice: thanks"),
+                (Role::Assistant, "part 3"),
+                (Role::User, "alice: next"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bot_message_without_content_is_dropped() {
+        let mut error_embed = message(3, BOT, "");
+        error_embed.embeds =
+            serde_json::from_value(json!([{"type": "rich", "title": "Timed out"}])).unwrap();
+        let history = [
+            message(4, BOT, "after"),
+            error_embed,
+            message(2, BOT, "before"),
+            message(1, ALICE, "q"),
+        ];
+
+        assert_eq!(
+            texts(&build(&history, None)),
+            [(Role::User, "alice: q"), (Role::Assistant, "before\nafter")]
+        );
+    }
+
+    #[test]
+    fn other_bots_system_users_and_non_regular_messages_are_dropped() {
+        let mut other_bot = message(4, BOB, "beep");
+        other_bot.author.bot = true;
+        let mut system = message(3, BOB, "system notice");
+        system.author.system = Some(true);
+        let mut thread_created = message(2, ALICE, "thread");
+        thread_created.kind = MessageType::ThreadCreated;
+        let mut reply = message(1, ALICE, "reply");
+        reply.kind = MessageType::Reply;
+
+        assert_eq!(
+            texts(&build(&[other_bot, system, thread_created, reply], None)),
+            [(Role::User, "alice: reply")]
+        );
+    }
+
+    #[test]
+    fn starter_message_comes_first_with_its_bot_mention_stripped() {
+        let mut starter = message(10, ALICE, "<@1000> what is rust?");
+        starter.mentions = vec![mention(BOT, "pythia", None)];
+        let history = [
+            message(12, ALICE, "and tokio?"),
+            message(11, BOT, "a language"),
+        ];
+
+        assert_eq!(
+            texts(&build(&history, Some(&starter))),
+            [
+                (Role::User, "alice: what is rust?"),
+                (Role::Assistant, "a language"),
+                (Role::User, "alice: and tokio?"),
+            ]
+        );
+    }
+
+    #[test]
+    fn starter_message_already_in_history_is_not_duplicated() {
+        let starter = message(10, ALICE, "hello");
+        let history = [message(10, ALICE, "hello")];
+
+        assert_eq!(
+            texts(&build(&history, Some(&starter))),
+            [(Role::User, "alice: hello")]
+        );
+    }
+
+    #[test]
+    fn attachments_are_appended_as_placeholder_lines() {
+        let mut with_text = message(2, ALICE, "look");
+        with_text.attachments = vec![
+            attachment("a.png", Some("image/png")),
+            attachment("b.webp", Some("image/webp")),
+            attachment("c.gif", Some("image/gif")),
+            attachment("notes.txt", Some("text/plain; charset=utf-8")),
+        ];
+        let mut without_text = message(1, ALICE, "<@1000>");
+        without_text.attachments = vec![attachment("d.JPG", None)];
+
+        assert_eq!(
+            texts(&build(&[with_text, without_text], None)),
+            [
+                (Role::User, "alice: [image: d.JPG]"),
+                (
+                    Role::User,
+                    "alice: look\n[image: a.png]\n[image: b.webp]\n[image: c.gif]\n[attachment: notes.txt]"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn image_detection_uses_content_type_before_extension() {
+        assert!(is_image_attachment(&attachment(
+            "x.bin",
+            Some("image/jpeg")
+        )));
+        assert!(is_image_attachment(&attachment("x.webp", None)));
+        assert!(!is_image_attachment(&attachment(
+            "x.png",
+            Some("application/octet-stream")
+        )));
+        assert!(!is_image_attachment(&attachment(
+            "x.svg",
+            Some("image/svg+xml")
+        )));
+        assert!(!is_image_attachment(&attachment("png", None)));
+    }
+
+    #[test]
+    fn message_with_only_a_bot_mention_and_no_attachment_is_dropped() {
+        let mut mention_only = message(2, ALICE, " <@1000> ");
+        mention_only.mentions = vec![mention(BOT, "pythia", None)];
+
+        assert_eq!(
+            texts(&build(&[mention_only, message(1, ALICE, "hi")], None)),
+            [(Role::User, "alice: hi")]
+        );
+    }
+
+    #[test]
+    fn older_messages_beyond_the_budget_are_dropped() {
+        // "alice: abc" is 10 chars.
+        let history = [
+            message(3, ALICE, "ccc"),
+            message(2, ALICE, "bbb"),
+            message(1, ALICE, "aaa"),
+        ];
+
+        let context = build_with_budget(&history, None, 20).unwrap();
+
+        assert_eq!(
+            texts(&context),
+            [(Role::User, "alice: bbb"), (Role::User, "alice: ccc")]
+        );
+    }
+
+    #[test]
+    fn newest_message_over_the_budget_is_truncated_and_kept_alone() {
+        let history = [message(2, ALICE, &"x".repeat(43)), message(1, ALICE, "old")];
+
+        let context = build_with_budget(&history, None, 20).unwrap();
+
+        assert_eq!(
+            texts(&context),
+            [(Role::User, "alice: xxxxxxxxxxxxx …(truncated)")]
+        );
+    }
+
+    #[test]
+    fn history_without_user_messages_has_nothing_to_answer() {
+        let history = [message(2, BOT, "a"), message(1, BOT, "b")];
+
+        assert_eq!(
+            build_with_budget(&history, None, 32_000),
+            Err(ContextError::NoUserMessage)
+        );
+        assert_eq!(
+            build_with_budget(&[], None, 32_000),
+            Err(ContextError::NoUserMessage)
+        );
+    }
+
+    #[test]
+    fn reply_target_is_the_newest_surviving_user_message() {
+        let mut dropped = message(4, ALICE, "<@1000>");
+        dropped.mentions = vec![mention(BOT, "pythia", None)];
+        let history = [
+            dropped,
+            message(3, BOT, "answer"),
+            message(2, BOB, "newest user"),
+            message(1, ALICE, "older user"),
+        ];
+
+        assert_eq!(build(&history, None).reply_to, Id::new(2));
+    }
+}

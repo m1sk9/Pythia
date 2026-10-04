@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Pythia is a Discord bot that bridges a server and LLM APIs: one thread is one conversation, and the bot keeps no state beyond what Discord holds. v3 is a rewrite on twilight and Tokio (Rust edition 2024, MSRV 1.89). As of Phase 2 the bot loads its configuration, looks up whether the configured model accepts images, builds the OpenRouter client, connects to the Discord gateway, logs the Ready event, and shuts down cleanly; it does not respond to messages yet.
+Pythia is a Discord bot that bridges a server and LLM APIs: one thread is one conversation, and the bot keeps no state beyond what Discord holds. v3 is a rewrite on twilight and Tokio (Rust edition 2024, MSRV 1.89). As of Phase 3 the bot loads its configuration, looks up whether the configured model accepts images, builds the OpenRouter client, connects to the Discord gateway, logs the Ready event, and shuts down cleanly. It can turn thread history into chat messages but does not respond to messages yet.
 
 ## Common Commands
 
@@ -28,7 +28,7 @@ The code is split into three layers: **on-event** decides whether a gateway even
 | `config.rs` | — | env + TOML config | done |
 | `gateway.rs` | on-event | shard loop, cache, trigger decision | shard loop and cache (Phase 1) |
 | `thread.rs` | on-event | thread naming, conversation registry, per-thread turn state | planned |
-| `context.rs` | orchestrator | Discord messages → chat messages (pure) | planned |
+| `context.rs` | orchestrator | Discord messages → chat messages (pure) | done (Phase 3) |
 | `attachments.rs` | orchestrator | image download / validation / base64 | planned |
 | `llm.rs`, `llm/openrouter.rs` | orchestrator | chat-completions shape and the OpenRouter client | done (Phase 2) |
 | `orchestrator.rs` | orchestrator | one conversation turn | planned |
@@ -38,6 +38,7 @@ The code is split into three layers: **on-event** decides whether a gateway even
 
 - **`config.rs`** — `EnvConfig` (secrets, via `envy`) and `PythiaConfig` (TOML, via `CONFIG_FILE_PATH`), both stored in `OnceLock`s. The file is deserialized into private `Raw*` structs and then validated into the public types, so required keys (`llm.model`) are reported by their full path and `system_prompt` / `system_prompt_file` are resolved into a single string. `config/config.toml` is the reference config and is covered by a test.
 - **`llm.rs` / `llm/openrouter.rs`** — Provider-neutral, OpenAI-shaped types (`ChatMessage`, `ChatRequest`, `ChatResponse`, `LlmError`) and the OpenRouter client. Request building, response parsing, status → error mapping, and the retry policy (`should_retry`: 429 / 5xx / connection errors, delays 1 s then 3 s, `Retry-After` honoured up to 30 s) are pure functions; only `chat` / `fetch_capabilities` touch the network. A failed `/models` lookup disables images instead of stopping startup. `OpenRouterClient` holds the API key and does not derive `Debug`.
+- **`context.rs`** — `build_context` turns thread history (newest first, as Discord returns it) plus the optional starter message into chronological `ChatMessage`s and the id of the newest user message to reply to. It drops other bots, system users, and non-`Regular`/`Reply` messages; labels users as `"{display_name}: {content}"` (nick → global name → username); removes the bot's mention and rewrites other user mentions as `@name`; merges consecutive bot posts; renders attachments as `[image: …]` / `[attachment: …]` lines; and keeps the newest messages within `context.max_chars`. No user message left → `ContextError::NoUserMessage`. Tests build `Message`s from JSON because the struct has a deprecated field.
 - **`gateway.rs`** — Runs one shard with `EventTypeFlags::all()`, feeds every event to a `DefaultInMemoryCache` (channels only), and stores the bot user id on Ready. A `None` from the stream means the shard closed fatally and the process exits with an error; a user-initiated close ends the loop on the following `GatewayClose`.
 
 ## Patterns & Conventions

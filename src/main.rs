@@ -4,6 +4,11 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 mod config;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "called by the orchestrator (#294)")
+)]
+mod context;
 mod gateway;
 mod llm;
 
