@@ -146,7 +146,10 @@ impl Default for RawLlmConfig {
 #[derive(Debug)]
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "read by the OpenRouter client (#292)")
+    expect(
+        dead_code,
+        reason = "provider and max_output_tokens are read by the orchestrator (#294)"
+    )
 )]
 pub struct LlmConfig {
     pub provider: LlmProvider,
