@@ -11,6 +11,7 @@ description = "A Discord bot that bridges your server and LLM APIs."
 [dependencies]
 anyhow = "1.0"
 base64 = "0.23"
+bytes = "1"
 dotenvy = "0.15"
 envy = "0.4"
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }

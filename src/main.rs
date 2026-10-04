@@ -39,17 +39,17 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     // The model list is off the hot path: an outage must not keep the bot down,
     // and a wrong model id still surfaces on the first chat request.
-    let accepts_images = match openrouter::fetch_capabilities(&http, &config.llm.model).await {
-        Ok(capabilities) => capabilities.accepts_images,
-        Err(error) => {
-            tracing::warn!(
-                error = format!("{error:#}"),
-                "failed to look up model capabilities; disabling images"
-            );
-            false
-        }
-    };
-    let images_enabled = config.attachments.images && accepts_images;
+    let images_enabled = config.attachments.images
+        && match openrouter::fetch_capabilities(&http, &config.llm.model).await {
+            Ok(capabilities) => capabilities.accepts_images,
+            Err(error) => {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "failed to look up model capabilities; disabling images"
+                );
+                false
+            }
+        };
     tracing::info!(model = %config.llm.model, images = images_enabled, "LLM client ready");
     let _llm = OpenRouterClient::new(
         http,

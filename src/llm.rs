@@ -139,6 +139,14 @@ pub enum LlmError {
         retries: u32,
         request_id: Option<String>,
     },
+    /// `finish_reason` is `length` and no text was produced, e.g. a reasoning
+    /// model spent the whole `max_output_tokens` budget on reasoning.
+    #[error("`{model}` hit the output token limit before producing any text")]
+    OutputTokenLimit {
+        model: String,
+        retries: u32,
+        request_id: Option<String>,
+    },
     #[error("`{model}` returned an empty response")]
     EmptyResponse {
         model: String,

@@ -7,6 +7,7 @@ use super::{
     ChatRequest, ChatResponse, Content, Finish, LlmError, ModelCapabilities, Part, Role, Usage,
 };
 use anyhow::Context as _;
+use bytes::Bytes;
 use reqwest::{
     StatusCode,
     header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, RETRY_AFTER},
@@ -18,6 +19,9 @@ const CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completion
 const MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
 const REFERER: &str = "https://github.com/m1sk9/Pythia";
 const TITLE: &str = "Pythia";
+
+/// Model id suffixes that OpenRouter accepts but does not list in `/models`.
+const ROUTING_VARIANTS: [&str; 4] = [":nitro", ":floor", ":exacto", ":online"];
 
 /// Delays before the first and subsequent retries.
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
@@ -60,10 +64,12 @@ impl OpenRouterClient {
         expect(dead_code, reason = "called by the orchestrator (#294)")
     )]
     pub async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
-        let body = request_body(&self.model, &self.system_prompt, request);
+        // `Bytes` so that a retry shares the body instead of copying it;
+        // base64 images can make it tens of megabytes.
+        let body = Bytes::from(request_body(&self.model, &self.system_prompt, request));
         let mut retries = 0;
         loop {
-            match self.send_once(&body, retries).await {
+            match self.send_once(body.clone(), retries).await {
                 Ok(response) => return Ok(response),
                 Err((outcome, error)) => match should_retry(&outcome, retries, self.max_retries) {
                     Some(delay) => {
@@ -80,17 +86,11 @@ impl OpenRouterClient {
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn send_once(
         &self,
-        body: &[u8],
+        body: Bytes,
         retries: u32,
     ) -> Result<ChatResponse, (Outcome, LlmError)> {
         let transport = |source: reqwest::Error| {
-            let outcome = if source.is_timeout() {
-                Outcome::Timeout
-            } else if source.is_connect() || (source.is_request() && source.status().is_none()) {
-                Outcome::Connect
-            } else {
-                Outcome::Other
-            };
+            let outcome = transport_outcome(&source);
             let error = if source.is_timeout() {
                 LlmError::Timeout {
                     model: self.model.clone(),
@@ -114,7 +114,7 @@ impl OpenRouterClient {
             .header("HTTP-Referer", REFERER)
             .header("X-Title", TITLE)
             .header(CONTENT_TYPE, "application/json")
-            .body(body.to_vec())
+            .body(body)
             .send()
             .await
             .map_err(transport)?;
@@ -167,6 +167,19 @@ enum Outcome {
     Connect,
     Timeout,
     Other,
+}
+
+/// Classifies a transport failure for the retry policy.
+fn transport_outcome(error: &reqwest::Error) -> Outcome {
+    if error.is_timeout() {
+        Outcome::Timeout
+    // Only a failed connect guarantees the request never reached the server;
+    // other send errors may follow a processed (and billed) request.
+    } else if error.is_connect() {
+        Outcome::Connect
+    } else {
+        Outcome::Other
+    }
 }
 
 /// Returns the delay before the next attempt, or `None` if the failure is final.
@@ -293,6 +306,8 @@ struct WireResponse {
     #[serde(default)]
     choices: Vec<WireChoice>,
     usage: Option<WireUsage>,
+    /// Set instead of `choices` when the provider fails after a 200 was sent.
+    error: Option<WireError>,
 }
 
 #[derive(Deserialize)]
@@ -320,14 +335,12 @@ struct WireErrorBody {
     error: WireError,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct WireError {
     // A number per the OpenRouter docs; kept loose so an upstream string code
     // does not turn a readable error into a decode failure.
     code: Option<serde_json::Value>,
     message: Option<String>,
-    #[expect(dead_code, reason = "kept for Debug output when inspecting errors")]
-    metadata: Option<serde_json::Value>,
 }
 
 impl WireError {
@@ -358,7 +371,16 @@ fn parse_completion(body: &[u8], model: &str, retries: u32) -> Result<ChatRespon
     };
 
     let Some(choice) = response.choices.into_iter().next() else {
-        return Err(empty(request_id, model));
+        return Err(match response.error {
+            Some(error) => LlmError::InResponse {
+                status: error.status(),
+                provider_message: error.message,
+                model,
+                retries,
+                request_id,
+            },
+            None => empty(request_id, model),
+        });
     };
     if let Some(error) = choice.error {
         return Err(LlmError::InResponse {
@@ -385,6 +407,13 @@ fn parse_completion(body: &[u8], model: &str, retries: u32) -> Result<ChatRespon
     };
     let text = match choice.message.and_then(|message| message.content) {
         Some(text) if !text.trim().is_empty() => text,
+        _ if finish == Finish::Length => {
+            return Err(LlmError::OutputTokenLimit {
+                model,
+                retries,
+                request_id,
+            });
+        }
         _ => return Err(empty(request_id, model)),
     };
 
@@ -457,13 +486,20 @@ struct WireArchitecture {
 }
 
 /// Finds `model` in a `/models` body and reads its input modalities.
+///
+/// Routing variants (`:nitro` etc.) are accepted on any model id but are not
+/// listed, so they are looked up by their base id.
 fn parse_capabilities(body: &[u8], model: &str) -> anyhow::Result<ModelCapabilities> {
     let models: WireModels =
         serde_json::from_slice(body).context("unexpected OpenRouter model list body")?;
+    let base = ROUTING_VARIANTS
+        .iter()
+        .find_map(|variant| model.strip_suffix(variant))
+        .unwrap_or(model);
     let entry = models
         .data
         .into_iter()
-        .find(|entry| entry.id == model)
+        .find(|entry| entry.id == base)
         .with_context(|| format!("model `{model}` is not in the OpenRouter model list"))?;
     let accepts_images = entry
         .architecture
@@ -633,6 +669,38 @@ mod tests {
     }
 
     #[test]
+    fn length_finish_without_text_is_an_output_token_limit_error() {
+        for message in [
+            json!({"content": null}),
+            json!({"content": " \n"}),
+            json!({"content": null, "reasoning": "long chain of thought"}),
+        ] {
+            let body = completion(json!({"finish_reason": "length", "message": message}));
+            let error = parse_completion(&body, MODEL, 0).unwrap_err();
+            assert!(
+                matches!(error, LlmError::OutputTokenLimit { .. }),
+                "{error:?}"
+            );
+        }
+        let body = completion(json!({"finish_reason": "length"}));
+        let error = parse_completion(&body, MODEL, 0).unwrap_err();
+        assert!(
+            matches!(error, LlmError::OutputTokenLimit { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn empty_text_with_a_finish_reason_other_than_length_is_never_an_output_token_limit_error() {
+        for finish_reason in [json!("stop"), Value::Null, json!("tool_calls")] {
+            let body =
+                completion(json!({"finish_reason": finish_reason, "message": {"content": null}}));
+            let error = parse_completion(&body, MODEL, 0).unwrap_err();
+            assert!(matches!(error, LlmError::EmptyResponse { .. }), "{error:?}");
+        }
+    }
+
+    #[test]
     fn choice_error_is_an_in_response_error_with_code_and_message() {
         let body = completion(json!({
             "finish_reason": "error",
@@ -652,6 +720,26 @@ mod tests {
                 assert_eq!(provider_message.as_deref(), Some("upstream died"));
                 assert_eq!(request_id.as_deref(), Some("gen-123"));
                 assert_eq!(retries, 1);
+            }
+            other => panic!("expected InResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn success_status_with_only_a_top_level_error_is_an_in_response_error() {
+        let body = br#"{"error": {"code": 502, "message": "provider failed after headers"}}"#;
+
+        match parse_completion(body, MODEL, 0).unwrap_err() {
+            LlmError::InResponse {
+                status,
+                provider_message,
+                ..
+            } => {
+                assert_eq!(status, Some(502));
+                assert_eq!(
+                    provider_message.as_deref(),
+                    Some("provider failed after headers")
+                );
             }
             other => panic!("expected InResponse, got {other:?}"),
         }
@@ -754,6 +842,16 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn refused_connection_is_retried_but_a_request_that_was_not_sent_is_not() {
+        let http = reqwest::Client::new();
+        let refused = http.get("http://127.0.0.1:1").send().await.unwrap_err();
+        let unbuildable = http.get("not a url").build().unwrap_err();
+
+        assert_eq!(transport_outcome(&refused), Outcome::Connect);
+        assert_eq!(transport_outcome(&unbuildable), Outcome::Other);
+    }
+
     #[test]
     fn retry_after_header_is_read_as_seconds() {
         let mut headers = HeaderMap::new();
@@ -805,6 +903,11 @@ mod tests {
                 source: client.http.get("not a url").build().unwrap_err(),
             },
             LlmError::ContentFilter {
+                model: model(),
+                retries: 0,
+                request_id: Some("gen-1".to_string()),
+            },
+            LlmError::OutputTokenLimit {
                 model: model(),
                 retries: 0,
                 request_id: Some("gen-1".to_string()),
@@ -869,6 +972,25 @@ mod tests {
         );
         let error = parse_capabilities(body, "missing/model").unwrap_err();
         assert!(error.to_string().contains("missing/model"), "{error}");
+    }
+
+    #[test]
+    fn routing_variant_uses_the_capabilities_of_its_base_model() {
+        let body = br#"{"data": [
+            {"id": "vision/model", "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "vision/model:free", "architecture": {"input_modalities": ["text"]}}
+        ]}"#;
+
+        assert!(
+            parse_capabilities(body, "vision/model:nitro")
+                .unwrap()
+                .accepts_images
+        );
+        assert!(
+            !parse_capabilities(body, "vision/model:free")
+                .unwrap()
+                .accepts_images
+        );
     }
 
     /// Manual check against the live API: `cargo test live_ping -- --ignored --nocapture`.

@@ -331,6 +331,10 @@ impl RawConfig {
             ));
         }
 
+        if llm.timeout_secs == 0 {
+            return invalid("`llm.timeout_secs` must be at least 1".to_string());
+        }
+
         if self.limits.max_concurrent == 0 {
             return invalid("`limits.max_concurrent` must be at least 1".to_string());
         }
@@ -493,6 +497,13 @@ mod tests {
         let toml = "[llm]\nmodel = \"x\"\n[limits]\nmax_concurrent = 0";
         let msg = validation_message(toml.parse());
         assert!(msg.contains("limits.max_concurrent"), "{msg}");
+    }
+
+    #[test]
+    fn zero_timeout_secs_is_rejected() {
+        let toml = "[llm]\nmodel = \"x\"\ntimeout_secs = 0";
+        let msg = validation_message(toml.parse());
+        assert!(msg.contains("llm.timeout_secs"), "{msg}");
     }
 
     #[test]
