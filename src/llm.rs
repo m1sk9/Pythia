@@ -9,10 +9,6 @@ pub mod openrouter;
 const MAX_DISPLAYED_PROVIDER_MESSAGE_CHARS: usize = 1024;
 
 /// Author of a chat message.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "sent by the orchestrator (#294)")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     System,
@@ -30,7 +26,7 @@ pub struct ChatMessage {
 /// Message content: plain text, or a list of parts when images are attached.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "sent by the orchestrator (#294)")
+    expect(dead_code, reason = "`Parts` is built from image attachments (#295)")
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Content {
@@ -167,6 +163,91 @@ pub enum LlmError {
         #[source]
         source: serde_json::Error,
     },
+}
+
+/// The fields of an [`LlmError`] that are shown to users.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorDetails<'a> {
+    pub model: &'a str,
+    pub retries: u32,
+    pub status: Option<u16>,
+    pub provider_message: Option<&'a str>,
+    pub request_id: Option<&'a str>,
+}
+
+impl LlmError {
+    pub fn details(&self) -> ErrorDetails<'_> {
+        let (model, retries, status, provider_message, request_id) = match self {
+            Self::Timeout {
+                model,
+                retries,
+                status,
+            } => (model, retries, *status, None, None),
+            Self::RateLimited {
+                model,
+                retries,
+                status,
+                provider_message,
+                request_id,
+            }
+            | Self::InResponse {
+                model,
+                retries,
+                status,
+                provider_message,
+                request_id,
+            } => (
+                model,
+                retries,
+                *status,
+                provider_message.as_deref(),
+                request_id.as_deref(),
+            ),
+            Self::Provider {
+                model,
+                retries,
+                status,
+                provider_message,
+                request_id,
+            } => (
+                model,
+                retries,
+                Some(*status),
+                provider_message.as_deref(),
+                request_id.as_deref(),
+            ),
+            Self::Transport { model, retries, .. } => (model, retries, None, None, None),
+            Self::ContentFilter {
+                model,
+                retries,
+                request_id,
+            }
+            | Self::OutputTokenLimit {
+                model,
+                retries,
+                request_id,
+            }
+            | Self::EmptyResponse {
+                model,
+                retries,
+                request_id,
+            } => (model, retries, None, None, request_id.as_deref()),
+            Self::Decode {
+                model,
+                retries,
+                status,
+                request_id,
+                ..
+            } => (model, retries, *status, None, request_id.as_deref()),
+        };
+        ErrorDetails {
+            model,
+            retries: *retries,
+            status,
+            provider_message,
+            request_id,
+        }
+    }
 }
 
 fn provider_suffix(message: &Option<String>) -> String {
