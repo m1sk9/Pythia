@@ -11,7 +11,7 @@ const MAX_DISPLAYED_PROVIDER_MESSAGE_CHARS: usize = 1024;
 /// Author of a chat message.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "built from thread history (#293)")
+    expect(dead_code, reason = "sent by the orchestrator (#294)")
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -30,7 +30,7 @@ pub struct ChatMessage {
 /// Message content: plain text, or a list of parts when images are attached.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "built from thread history (#293)")
+    expect(dead_code, reason = "sent by the orchestrator (#294)")
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Content {
@@ -41,10 +41,7 @@ pub enum Content {
 /// One part of a multi-part message.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "built from thread history and attachments (#293, #295)"
-    )
+    expect(dead_code, reason = "built from image attachments (#295)")
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Part {
