@@ -41,10 +41,7 @@ pub enum Content {
 /// One part of a multi-part message.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "built from image attachments (#295)"
-    )
+    expect(dead_code, reason = "built from image attachments (#295)")
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Part {

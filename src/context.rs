@@ -4,6 +4,7 @@
 //! them in, so the rules can be tested without Discord.
 
 use crate::llm::{ChatMessage, Content, Role};
+use std::collections::HashMap;
 use twilight_model::{
     channel::{
         Attachment, Message,
@@ -34,7 +35,7 @@ pub struct ContextInput<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuiltContext {
     pub messages: Vec<ChatMessage>,
-    /// The newest user message that made it into `messages`.
+    /// The newest user message; it is always the last of `messages`.
     pub reply_to: Id<MessageMarker>,
 }
 
@@ -62,10 +63,14 @@ pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextErr
     let chronological = starter
         .into_iter()
         .chain(input.history_newest_first.iter().rev());
+    let speakers: HashMap<_, _> = chronological
+        .clone()
+        .map(|message| (message.author.id, display_name(message)))
+        .collect();
 
     let mut entries: Vec<Entry> = Vec::new();
     for message in chronological {
-        let Some(entry) = to_entry(message, input.bot_id) else {
+        let Some(entry) = to_entry(message, input.bot_id, &speakers) else {
             continue;
         };
         match entries.last_mut() {
@@ -77,16 +82,15 @@ pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextErr
         }
     }
 
-    let kept = trim_to_budget(entries, input.max_chars);
-    let reply_to = kept
+    let newest_user = entries
         .iter()
-        .rev()
-        .find(|entry| entry.role == Role::User)
-        .map(|entry| entry.id)
+        .rposition(|entry| entry.role == Role::User)
         .ok_or(ContextError::NoUserMessage)?;
+    let reply_to = entries[newest_user].id;
+    entries.truncate(newest_user + 1);
 
     Ok(BuiltContext {
-        messages: kept
+        messages: trim_to_budget(entries, input.max_chars)
             .into_iter()
             .map(|entry| ChatMessage {
                 role: entry.role,
@@ -97,7 +101,11 @@ pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextErr
     })
 }
 
-fn to_entry(message: &Message, bot_id: Id<UserMarker>) -> Option<Entry> {
+fn to_entry(
+    message: &Message,
+    bot_id: Id<UserMarker>,
+    speakers: &HashMap<Id<UserMarker>, &str>,
+) -> Option<Entry> {
     let author = &message.author;
     if author.system == Some(true)
         || (author.bot && author.id != bot_id)
@@ -114,7 +122,7 @@ fn to_entry(message: &Message, bot_id: Id<UserMarker>) -> Option<Entry> {
         });
     }
 
-    let content = strip_mentions(&message.content, bot_id, &message.mentions);
+    let content = strip_mentions(&message.content, bot_id, &message.mentions, speakers);
     if content.is_empty() && message.attachments.is_empty() {
         return None;
     }
@@ -165,21 +173,33 @@ pub fn display_name(message: &Message) -> &str {
         .unwrap_or(&message.author.name)
 }
 
-/// Removes mentions of the bot and replaces other user mentions with `@name`.
+/// Removes mentions of the bot and replaces other user mentions with `@name`,
+/// using the name from `speakers` so that a user is called the same in their
+/// own messages and in mentions.
 /// Mentions of users missing from `mentions`, channels, and roles are kept as is.
-pub fn strip_mentions(content: &str, bot_id: Id<UserMarker>, mentions: &[Mention]) -> String {
+pub fn strip_mentions(
+    content: &str,
+    bot_id: Id<UserMarker>,
+    mentions: &[Mention],
+    speakers: &HashMap<Id<UserMarker>, &str>,
+) -> String {
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
     while let Some(start) = rest.find("<@") {
         out.push_str(&rest[..start]);
         let candidate = &rest[start..];
         match parse_user_mention(candidate) {
-            Some((id, len)) if id == bot_id => rest = &candidate[len..],
+            Some((id, len)) if id == bot_id => {
+                rest = &candidate[len..];
+                if out.is_empty() || out.ends_with(' ') {
+                    rest = rest.trim_start_matches(' ');
+                }
+            }
             Some((id, len)) => {
                 match mentions.iter().find(|mention| mention.id == id) {
                     Some(mention) => {
                         out.push('@');
-                        out.push_str(mention_name(mention));
+                        out.push_str(speakers.get(&id).copied().unwrap_or(mention_name(mention)));
                     }
                     None => out.push_str(&candidate[..len]),
                 }
@@ -207,6 +227,8 @@ fn parse_user_mention(s: &str) -> Option<(Id<UserMarker>, usize)> {
     Some((id, prefix_len + end + 1))
 }
 
+// twilight's `Mention` drops `global_name`, so a user who has not spoken in
+// the thread cannot be named the way `display_name` would.
 fn mention_name(mention: &Mention) -> &str {
     mention
         .member
@@ -345,6 +367,7 @@ mod tests {
     #[test]
     fn history_is_returned_oldest_first_with_bot_messages_as_assistant() {
         let history = [
+            message(5, ALICE, "question 3"),
             message(4, BOT, "answer 2"),
             message(3, ALICE, "question 2"),
             message(2, BOT, "answer 1"),
@@ -358,6 +381,7 @@ mod tests {
                 (Role::Assistant, "answer 1"),
                 (Role::User, "alice: question 2"),
                 (Role::Assistant, "answer 2"),
+                (Role::User, "alice: question 3"),
             ]
         );
     }
@@ -392,20 +416,47 @@ mod tests {
             strip_mentions(
                 "  <@1000> ask <@!3000> about <@!1000>it  ",
                 Id::new(BOT),
-                &mentions
+                &mentions,
+                &HashMap::new()
             ),
             "ask @Bobby about it"
         );
         assert_eq!(
-            strip_mentions("<@3000>", Id::new(BOT), &[mention(BOB, "bob", None)]),
+            strip_mentions(
+                "<@3000>",
+                Id::new(BOT),
+                &[mention(BOB, "bob", None)],
+                &HashMap::new()
+            ),
             "@bob"
+        );
+    }
+
+    #[test]
+    fn mentioned_user_who_spoke_in_the_thread_keeps_their_speaker_label() {
+        let mut from_alice = message(1, ALICE, "hi");
+        from_alice.author.global_name = Some("Alice Global".to_string());
+        let mut from_bob = message(2, BOB, "<@2000> hello");
+        from_bob.mentions = vec![mention(ALICE, "alice", None)];
+
+        assert_eq!(
+            texts(&build(&[from_bob, from_alice], None)),
+            [
+                (Role::User, "Alice Global: hi"),
+                (Role::User, "bob: @Alice Global hello"),
+            ]
         );
     }
 
     #[test]
     fn unknown_user_channel_and_role_mentions_are_kept() {
         assert_eq!(
-            strip_mentions("<@4000> in <#5> for <@&6> or <@> <@x>", Id::new(BOT), &[]),
+            strip_mentions(
+                "<@4000> in <#5> for <@&6> or <@> <@x>",
+                Id::new(BOT),
+                &[],
+                &HashMap::new()
+            ),
             "<@4000> in <#5> for <@&6> or <@> <@x>"
         );
     }
@@ -439,6 +490,7 @@ mod tests {
         error_embed.embeds =
             serde_json::from_value(json!([{"type": "rich", "title": "Timed out"}])).unwrap();
         let history = [
+            message(5, ALICE, "next"),
             message(4, BOT, "after"),
             error_embed,
             message(2, BOT, "before"),
@@ -447,7 +499,11 @@ mod tests {
 
         assert_eq!(
             texts(&build(&history, None)),
-            [(Role::User, "alice: q"), (Role::Assistant, "before\nafter")]
+            [
+                (Role::User, "alice: q"),
+                (Role::Assistant, "before\nafter"),
+                (Role::User, "alice: next"),
+            ]
         );
     }
 
@@ -553,14 +609,14 @@ mod tests {
 
     #[test]
     fn older_messages_beyond_the_budget_are_dropped() {
-        // "alice: abc" is 10 chars.
         let history = [
             message(3, ALICE, "ccc"),
             message(2, ALICE, "bbb"),
             message(1, ALICE, "aaa"),
         ];
+        let two_messages = "alice: bbb".chars().count() * 2;
 
-        let context = build_with_budget(&history, None, 20).unwrap();
+        let context = build_with_budget(&history, None, two_messages).unwrap();
 
         assert_eq!(
             texts(&context),
@@ -606,5 +662,45 @@ mod tests {
         ];
 
         assert_eq!(build(&history, None).reply_to, Id::new(2));
+    }
+
+    #[test]
+    fn bot_messages_after_the_newest_user_message_are_not_sent() {
+        let history = [
+            message(3, BOT, "answer"),
+            message(2, ALICE, "question"),
+            message(1, BOT, "greeting"),
+        ];
+
+        assert_eq!(
+            texts(&build(&history, None)),
+            [
+                (Role::Assistant, "greeting"),
+                (Role::User, "alice: question"),
+            ]
+        );
+    }
+
+    #[test]
+    fn oversized_bot_answer_after_the_newest_user_message_does_not_hide_it() {
+        let history = [message(2, BOT, &"x".repeat(100)), message(1, ALICE, "q")];
+
+        let context = build_with_budget(&history, None, 20).unwrap();
+
+        assert_eq!(texts(&context), [(Role::User, "alice: q")]);
+        assert_eq!(context.reply_to, Id::new(1));
+    }
+
+    #[test]
+    fn removing_a_bot_mention_mid_sentence_leaves_a_single_space() {
+        assert_eq!(
+            strip_mentions(
+                "ask <@1000> about <@1000>  it",
+                Id::new(BOT),
+                &[],
+                &HashMap::new()
+            ),
+            "ask about it"
+        );
     }
 }
