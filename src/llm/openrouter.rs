@@ -25,7 +25,7 @@ const ROUTING_VARIANTS: [&str; 4] = [":nitro", ":floor", ":exacto", ":online"];
 
 /// Delays before the first and subsequent retries.
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
-/// `Retry-After` values above this fall back to [`RETRY_DELAYS`].
+/// A `Retry-After` above this makes the failure final.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 /// Client for OpenRouter's chat-completions endpoint.
@@ -34,6 +34,8 @@ pub struct OpenRouterClient {
     http: reqwest::Client,
     api_key: String,
     model: String,
+    /// Tried in order by OpenRouter when `model` fails.
+    fallback_models: Vec<String>,
     system_prompt: String,
     max_retries: u32,
 }
@@ -45,6 +47,7 @@ impl OpenRouterClient {
         http: reqwest::Client,
         api_key: String,
         model: String,
+        fallback_models: Vec<String>,
         system_prompt: String,
         max_retries: u32,
     ) -> Self {
@@ -52,6 +55,7 @@ impl OpenRouterClient {
             http,
             api_key,
             model,
+            fallback_models,
             system_prompt,
             max_retries,
         }
@@ -62,7 +66,12 @@ impl OpenRouterClient {
     pub async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
         // `Bytes` so that a retry shares the body instead of copying it;
         // base64 images can make it tens of megabytes.
-        let body = Bytes::from(request_body(&self.model, &self.system_prompt, request));
+        let body = Bytes::from(request_body(
+            &self.model,
+            &self.fallback_models,
+            &self.system_prompt,
+            request,
+        ));
         let mut retries = 0;
         loop {
             match self.send_once(body.clone(), retries).await {
@@ -133,11 +142,11 @@ impl OpenRouterClient {
     }
 }
 
-/// Looks up whether `model` accepts images via OpenRouter's public model list.
+/// Looks up what every one of `models` accepts via OpenRouter's public model list.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_capabilities(
     http: &reqwest::Client,
-    model: &str,
+    models: &[&str],
 ) -> anyhow::Result<ModelCapabilities> {
     let body = http
         .get(MODELS_URL)
@@ -150,7 +159,7 @@ pub async fn fetch_capabilities(
         .bytes()
         .await
         .context("failed to read the OpenRouter model list")?;
-    parse_capabilities(&body, model)
+    parse_capabilities(&body, models)
 }
 
 /// The result of one attempt, as far as the retry policy is concerned.
@@ -190,11 +199,12 @@ fn should_retry(outcome: &Outcome, retries: u32, max_retries: u32) -> Option<Dur
         Outcome::Status {
             status,
             retry_after,
-        } if status == 429 || (500..600).contains(&status) => Some(
-            retry_after
-                .filter(|delay| *delay <= MAX_RETRY_AFTER)
-                .unwrap_or(fallback),
-        ),
+        } if status == 429 || (500..600).contains(&status) => match retry_after {
+            // Retrying sooner than asked would only collect another 429.
+            Some(delay) if delay > MAX_RETRY_AFTER => None,
+            Some(delay) => Some(delay),
+            None => Some(fallback),
+        },
         Outcome::Connect => Some(fallback),
         Outcome::Status { .. } | Outcome::Timeout | Outcome::Other => None,
     }
@@ -214,7 +224,10 @@ fn retry_after(headers: &HeaderMap) -> Option<Duration> {
 
 #[derive(Serialize)]
 struct WireRequest<'a> {
-    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    models: Option<Vec<&'a str>>,
     messages: Vec<WireMessage<'a>>,
     max_tokens: u32,
     stream: bool,
@@ -275,7 +288,15 @@ fn wire_content(content: &Content) -> WireContent<'_> {
 }
 
 /// Serialises the request body: the system prompt first, then the request messages.
-fn request_body(model: &str, system_prompt: &str, request: &ChatRequest) -> Vec<u8> {
+///
+/// With fallbacks, every model goes into `models` in order, as OpenRouter's
+/// model fallbacks expect; otherwise the model goes into `model`.
+fn request_body(
+    model: &str,
+    fallback_models: &[String],
+    system_prompt: &str,
+    request: &ChatRequest,
+) -> Vec<u8> {
     let system = WireMessage {
         role: role_name(Role::System),
         content: WireContent::Text(system_prompt),
@@ -286,8 +307,17 @@ fn request_body(model: &str, system_prompt: &str, request: &ChatRequest) -> Vec<
             content: wire_content(&message.content),
         }))
         .collect();
+    let (model, models) = if fallback_models.is_empty() {
+        (Some(model), None)
+    } else {
+        let models = std::iter::once(model)
+            .chain(fallback_models.iter().map(String::as_str))
+            .collect();
+        (None, Some(models))
+    };
     let body = WireRequest {
         model,
+        models,
         messages,
         max_tokens: request.max_output_tokens,
         stream: false,
@@ -481,25 +511,30 @@ struct WireArchitecture {
     input_modalities: Vec<String>,
 }
 
-/// Finds `model` in a `/models` body and reads its input modalities.
+/// Finds each of `models` in a `/models` body and reads their input modalities.
 ///
-/// Routing variants (`:nitro` etc.) are accepted on any model id but are not
-/// listed, so they are looked up by their base id.
-fn parse_capabilities(body: &[u8], model: &str) -> anyhow::Result<ModelCapabilities> {
-    let models: WireModels =
+/// A capability holds only if every model has it, because any of them may end
+/// up answering. Routing variants (`:nitro` etc.) are accepted on any model id
+/// but are not listed, so they are looked up by their base id.
+fn parse_capabilities(body: &[u8], models: &[&str]) -> anyhow::Result<ModelCapabilities> {
+    let list: WireModels =
         serde_json::from_slice(body).context("unexpected OpenRouter model list body")?;
-    let base = ROUTING_VARIANTS
-        .iter()
-        .find_map(|variant| model.strip_suffix(variant))
-        .unwrap_or(model);
-    let entry = models
-        .data
-        .into_iter()
-        .find(|entry| entry.id == base)
-        .with_context(|| format!("model `{model}` is not in the OpenRouter model list"))?;
-    let accepts_images = entry
-        .architecture
-        .is_some_and(|arch| arch.input_modalities.iter().any(|m| m == "image"));
+    let mut accepts_images = true;
+    for &model in models {
+        let base = ROUTING_VARIANTS
+            .iter()
+            .find_map(|variant| model.strip_suffix(variant))
+            .unwrap_or(model);
+        let entry = list
+            .data
+            .iter()
+            .find(|entry| entry.id == base)
+            .with_context(|| format!("model `{model}` is not in the OpenRouter model list"))?;
+        accepts_images &= entry
+            .architecture
+            .as_ref()
+            .is_some_and(|arch| arch.input_modalities.iter().any(|m| m == "image"));
+    }
     Ok(ModelCapabilities { accepts_images })
 }
 
@@ -512,7 +547,7 @@ mod tests {
     const MODEL: &str = "openai/gpt-4o-mini";
 
     fn body_json(request: &ChatRequest) -> Value {
-        serde_json::from_slice(&request_body(MODEL, "be helpful", request)).unwrap()
+        serde_json::from_slice(&request_body(MODEL, &[], "be helpful", request)).unwrap()
     }
 
     fn user(content: Content) -> ChatMessage {
@@ -591,6 +626,21 @@ mod tests {
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBBB"}},
             ])
         );
+    }
+
+    #[test]
+    fn request_body_with_fallbacks_lists_every_model_in_order_under_models_only() {
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("hello".to_string()))],
+            max_output_tokens: 256,
+        };
+        let fallbacks = ["backup/a".to_string(), "backup/b".to_string()];
+        let body: Value =
+            serde_json::from_slice(&request_body(MODEL, &fallbacks, "be helpful", &request))
+                .unwrap();
+
+        assert_eq!(body["models"], json!([MODEL, "backup/a", "backup/b"]));
+        assert!(body.get("model").is_none(), "{body}");
     }
 
     #[test]
@@ -823,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_is_honoured_up_to_30s_and_falls_back_beyond() {
+    fn retry_after_is_honoured_up_to_30s_and_beyond_that_the_failure_is_final() {
         let with_retry_after = |seconds| Outcome::Status {
             status: 429,
             retry_after: Some(Duration::from_secs(seconds)),
@@ -833,9 +883,10 @@ mod tests {
             Some(Duration::from_secs(10))
         );
         assert_eq!(
-            should_retry(&with_retry_after(120), 0, 2),
-            Some(Duration::from_secs(1))
+            should_retry(&with_retry_after(30), 0, 2),
+            Some(Duration::from_secs(30))
         );
+        assert_eq!(should_retry(&with_retry_after(120), 0, 2), None);
     }
 
     #[tokio::test]
@@ -868,6 +919,7 @@ mod tests {
             reqwest::Client::new(),
             API_KEY.to_string(),
             MODEL.to_string(),
+            Vec::new(),
             "be helpful".to_string(),
             2,
         );
@@ -957,16 +1009,38 @@ mod tests {
         ]}"#;
 
         assert!(
-            parse_capabilities(body, "vision/model")
+            parse_capabilities(body, &["vision/model"])
                 .unwrap()
                 .accepts_images
         );
         assert!(
-            !parse_capabilities(body, "text/model")
+            !parse_capabilities(body, &["text/model"])
                 .unwrap()
                 .accepts_images
         );
-        let error = parse_capabilities(body, "missing/model").unwrap_err();
+        let error = parse_capabilities(body, &["missing/model"]).unwrap_err();
+        assert!(error.to_string().contains("missing/model"), "{error}");
+    }
+
+    #[test]
+    fn images_are_accepted_only_when_every_model_accepts_them() {
+        let body = br#"{"data": [
+            {"id": "vision/a", "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "vision/b", "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "text/model", "architecture": {"input_modalities": ["text"]}}
+        ]}"#;
+
+        assert!(
+            parse_capabilities(body, &["vision/a", "vision/b"])
+                .unwrap()
+                .accepts_images
+        );
+        assert!(
+            !parse_capabilities(body, &["vision/a", "text/model"])
+                .unwrap()
+                .accepts_images
+        );
+        let error = parse_capabilities(body, &["vision/a", "missing/model"]).unwrap_err();
         assert!(error.to_string().contains("missing/model"), "{error}");
     }
 
@@ -978,12 +1052,12 @@ mod tests {
         ]}"#;
 
         assert!(
-            parse_capabilities(body, "vision/model:nitro")
+            parse_capabilities(body, &["vision/model:nitro"])
                 .unwrap()
                 .accepts_images
         );
         assert!(
-            !parse_capabilities(body, "vision/model:free")
+            !parse_capabilities(body, &["vision/model:free"])
                 .unwrap()
                 .accepts_images
         );
@@ -1009,9 +1083,15 @@ mod tests {
             .build()
             .unwrap();
 
-        println!("{:?}", fetch_capabilities(&http, &model).await);
-        let client =
-            OpenRouterClient::new(http, api_key, model, "Reply with one word.".to_string(), 2);
+        println!("{:?}", fetch_capabilities(&http, &[&model]).await);
+        let client = OpenRouterClient::new(
+            http,
+            api_key,
+            model,
+            Vec::new(),
+            "Reply with one word.".to_string(),
+            2,
+        );
         let request = ChatRequest {
             messages: vec![user(Content::Text("ping".to_string()))],
             max_output_tokens: 32,

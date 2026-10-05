@@ -117,6 +117,7 @@ pub enum LlmProvider {
 struct RawLlmConfig {
     provider: LlmProvider,
     model: Option<String>,
+    fallback_models: Vec<String>,
     system_prompt: Option<String>,
     system_prompt_file: Option<PathBuf>,
     max_output_tokens: u32,
@@ -129,6 +130,7 @@ impl Default for RawLlmConfig {
         Self {
             provider: LlmProvider::default(),
             model: None,
+            fallback_models: Vec::new(),
             system_prompt: None,
             system_prompt_file: None,
             max_output_tokens: 4096,
@@ -150,6 +152,8 @@ impl Default for RawLlmConfig {
 pub struct LlmConfig {
     pub provider: LlmProvider,
     pub model: String,
+    /// Models OpenRouter tries in order when `model` fails (429 included).
+    pub fallback_models: Vec<String>,
     /// Resolved from `system_prompt`, `system_prompt_file`, or the default.
     pub system_prompt: String,
     pub max_output_tokens: u32,
@@ -300,6 +304,10 @@ impl RawConfig {
             );
         };
 
+        if llm.fallback_models.iter().any(String::is_empty) {
+            return invalid("`llm.fallback_models` must not contain empty model ids".to_string());
+        }
+
         let system_prompt = match (llm.system_prompt, llm.system_prompt_file) {
             (Some(_), Some(_)) => {
                 return invalid(
@@ -351,6 +359,7 @@ impl RawConfig {
             llm: LlmConfig {
                 provider: llm.provider,
                 model,
+                fallback_models: llm.fallback_models,
                 system_prompt,
                 max_output_tokens: llm.max_output_tokens,
                 timeout_secs: llm.timeout_secs,
@@ -418,6 +427,7 @@ mod tests {
         assert_eq!(config.discord.allowed_guilds, vec![123456789012345678]);
         assert_eq!(config.llm.provider, LlmProvider::OpenRouter);
         assert_eq!(config.llm.model, "<openrouter model id>");
+        assert!(config.llm.fallback_models.is_empty());
         assert_eq!(config.llm.system_prompt, DEFAULT_SYSTEM_PROMPT);
         assert_eq!(config.llm.max_output_tokens, 4096);
         assert_eq!(config.llm.timeout_secs, 120);
@@ -442,6 +452,7 @@ mod tests {
         assert!(config.discord.allowed_guilds.is_empty());
         assert_eq!(config.llm.provider, LlmProvider::OpenRouter);
         assert_eq!(config.llm.model, "x");
+        assert!(config.llm.fallback_models.is_empty());
         assert_eq!(config.llm.system_prompt, DEFAULT_SYSTEM_PROMPT);
         assert_eq!(config.llm.max_output_tokens, 4096);
         assert_eq!(config.llm.timeout_secs, 120);
@@ -463,6 +474,20 @@ mod tests {
     fn missing_llm_model_error_names_the_key() {
         let msg = validation_message("".parse());
         assert!(msg.contains("llm.model"), "{msg}");
+    }
+
+    #[test]
+    fn fallback_models_keep_their_order() {
+        let toml = "[llm]\nmodel = \"x\"\nfallback_models = [\"b\", \"a\"]";
+        let config: PythiaConfig = toml.parse().unwrap();
+        assert_eq!(config.llm.fallback_models, ["b", "a"]);
+    }
+
+    #[test]
+    fn empty_fallback_model_id_is_rejected() {
+        let toml = "[llm]\nmodel = \"x\"\nfallback_models = [\"\"]";
+        let msg = validation_message(toml.parse());
+        assert!(msg.contains("llm.fallback_models"), "{msg}");
     }
 
     #[test]

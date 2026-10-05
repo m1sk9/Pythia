@@ -372,6 +372,7 @@ mod tests {
             http,
             api_key,
             model,
+            Vec::new(),
             "Describe images in one sentence.".to_string(),
             2,
         );

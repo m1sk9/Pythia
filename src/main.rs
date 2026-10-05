@@ -47,8 +47,12 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     // The model list is off the hot path: an outage must not keep the bot down,
     // and a wrong model id still surfaces on the first chat request.
+    let models: Vec<&str> = std::iter::once(&config.llm.model)
+        .chain(&config.llm.fallback_models)
+        .map(String::as_str)
+        .collect();
     let images_enabled = config.attachments.images
-        && match openrouter::fetch_capabilities(&http, &config.llm.model).await {
+        && match openrouter::fetch_capabilities(&http, &models).await {
             Ok(capabilities) => capabilities.accepts_images,
             Err(error) => {
                 tracing::warn!(
@@ -58,11 +62,17 @@ async fn main() -> anyhow::Result<()> {
                 false
             }
         };
-    tracing::info!(model = %config.llm.model, images = images_enabled, "LLM client ready");
+    tracing::info!(
+        model = %config.llm.model,
+        fallback_models = ?config.llm.fallback_models,
+        images = images_enabled,
+        "LLM client ready"
+    );
     let llm = OpenRouterClient::new(
         http.clone(),
         envs.openrouter_api_key.clone(),
         config.llm.model.clone(),
+        config.llm.fallback_models.clone(),
         config.llm.system_prompt.clone(),
         config.llm.max_retries,
     );
