@@ -1,14 +1,11 @@
 # Pythia
 
 [![CI](https://github.com/m1sk9/Pythia/actions/workflows/ci.yaml/badge.svg)](https://github.com/m1sk9/Pythia/actions/workflows/ci.yaml)
+[![codecov](https://codecov.io/gh/m1sk9/Pythia/graph/badge.svg)](https://codecov.io/gh/m1sk9/Pythia)
 [![Release Pythia](https://github.com/m1sk9/Pythia/actions/workflows/release.yaml/badge.svg)](https://github.com/m1sk9/Pythia/actions/workflows/release.yaml)
 [![Apache License 2.0](https://img.shields.io/github/license/m1sk9/Pythia?color=%239944ee)](https://github.com/m1sk9/Pythia/blob/main/LICENSE)
 
 A Discord bot that bridges your server and LLM APIs.
-
-> [!CAUTION]
-> **Pythia is under heavy rewrite and is not usable until v3.0.0 is released.**
-> The code on `main` is broken and incomplete. Do not deploy it, and do not expect any of the images below to exist until v3.0.0 is published.
 
 > [!WARNING]
 > **v2 and earlier are deprecated.**
@@ -28,21 +25,53 @@ docker pull ghcr.io/m1sk9/pythia:v3.0.0
 
 [_API Support: requires Discord API v10_](https://discord.com/developers/docs/reference#api-versioning)
 
-## Installation
+## What it does
 
-You can install Pythia using Docker. The following command will pull the latest version of Pythia.
+- **One thread is one conversation.** Mention Pythia in a channel and it opens a thread from your message and answers there. Keep talking in the thread without mentioning it; it reads the thread history every time, so it keeps no database and survives restarts.
+- **Joins existing threads.** Mention Pythia in any thread and it answers there too, and keeps answering without further mentions.
+- **One answer at a time per thread.** Messages sent while Pythia is answering are covered together by its next answer.
+- **Reads screenshots.** With a model that accepts images, recent PNG / JPEG / WebP / GIF attachments are sent along with the text.
+- **Allow-listed servers only.** Pythia answers only in the guilds listed in `discord.allowed_guilds`.
+- **Powered by [OpenRouter](https://openrouter.ai/).** Any chat model on OpenRouter can be used.
 
-```shell
-docker pull ghcr.io/m1sk9/pythia:v3
+Answers longer than Discord's 2000-character limit are split into several messages, and model output never pings users or roles. Failures (timeouts, rate limits, provider errors) are shown as an embed with the status, provider message, and request ID.
+
+## Setup
+
+1. Create an application and a bot in the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Under **Bot**, enable the **Message Content Intent** (privileged).
+3. Invite the bot with these permissions:
+   - View Channels
+   - Send Messages
+   - Send Messages in Threads
+   - Create Public Threads
+   - Read Message History
+4. Create an [OpenRouter API key](https://openrouter.ai/settings/keys).
+
+## Configuration
+
+Secrets and the path to the configuration file come from environment variables (a `.env` file is read when present):
+
+| variable | required | description |
+|---|---|---|
+| `DISCORD_API_TOKEN` | yes | Bot token |
+| `OPENROUTER_API_KEY` | yes | OpenRouter API key |
+| `CONFIG_FILE_PATH` | yes | Path to `config.toml` |
+| `RUST_LOG` | no | Log filter; overrides `[log] level` when set |
+
+Everything else lives in `config.toml`. Start from [`config/config.toml`](./config/config.toml), which documents every key and its default. At minimum, set:
+
+```toml
+[discord]
+allowed_guilds = [123456789012345678]
+
+[llm]
+model = "<openrouter model id>"
 ```
 
-Tested on macOS and Linux (major distributions) as recommended environment.
+## Running with Docker Compose
 
-### Using Docker Compose
-
-It is recommended to use Docker Compose when setting up Pythia. Direct startup using Docker images or binary files is also possible but not recommended.
-
-If you are using orchestration tools such as k8s or Docker Swarm, please configure them according to their respective configuration files.
+Docker Compose is the recommended way to run Pythia. If you use an orchestrator such as Kubernetes or Docker Swarm, translate the following into its configuration.
 
 ```yaml
 services:
@@ -50,8 +79,35 @@ services:
     image: ghcr.io/m1sk9/pythia:v3
     env_file:
       - .env
+    environment:
+      CONFIG_FILE_PATH: /config/config.toml
+    volumes:
+      - ./config/config.toml:/config/config.toml:ro
     restart: always
 ```
+
+Put `DISCORD_API_TOKEN` and `OPENROUTER_API_KEY` in `.env` next to `compose.yaml`, then:
+
+```sh
+docker compose up -d
+```
+
+The image is built on distroless and is published for `linux/amd64` and `linux/arm64`.
+
+## Limits and safety defaults
+
+- **Empty `discord.allowed_guilds` refuses to start.** Pythia never answers in a server you did not list.
+- **`llm.model` is required.** Models differ widely in price, so there is no default.
+- **Bounded usage.** At most `limits.max_concurrent` answers are generated at once, each conversation is trimmed to `context.max_chars` characters (newest messages win), and each answer is capped at `llm.max_output_tokens` tokens and `response.max_parts` messages.
+- **Images are opt-out.** Set `attachments.images = false` to send only text. Images are also disabled automatically when the model does not accept them.
+- **Other bots are ignored**, as are locked threads and system messages.
+
+## Not supported
+
+- Direct messages
+- Slash commands
+- Image generation
+- Streaming answers (an answer is posted once it is complete)
 
 ## LICENSE
 

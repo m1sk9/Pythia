@@ -1,19 +1,25 @@
-FROM rust:1.99.0-bookworm AS builder
-
+FROM lukemathwalker/cargo-chef:latest-rust-1.99.0-bookworm AS chef
 WORKDIR /root/app
-COPY --chown=root:root . .
 
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS cook
+COPY --from=planner /root/app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+FROM cook AS builder
+COPY . .
 RUN cargo build --release --bin pythia
 
-FROM debian:bookworm-slim AS runner
+FROM gcr.io/distroless/cc-debian12 AS runner
 
-COPY --from=builder --chown=root:root /root/app/target/release/pythia /usr/local/bin/pythia
-
-RUN apt-get update && apt-get install -y libssl-dev ca-certificates
-
-RUN useradd --create-home --user-group pythia
-USER pythia
-WORKDIR /home/pythia
+COPY --from=builder --chown=root:root /root/app/target/release/pythia /
 
 LABEL org.opencontainers.image.source=https://github.com/m1sk9/Pythia
-ENTRYPOINT [ "pythia" ]
+
+# Secrets and CONFIG_FILE_PATH come from the environment (see compose.yaml).
+# The log level follows `[log] level` in config.toml; RUST_LOG overrides it.
+
+CMD ["./pythia"]

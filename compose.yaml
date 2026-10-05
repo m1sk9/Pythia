@@ -1,0 +1,10 @@
+services:
+  app:
+    image: ghcr.io/m1sk9/pythia:v3
+    env_file:
+      - .env
+    environment:
+      CONFIG_FILE_PATH: /config/config.toml
+    volumes:
+      - ./config/config.toml:/config/config.toml:ro
+    restart: always

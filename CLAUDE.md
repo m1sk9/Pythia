@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Pythia is a Discord bot that bridges a server and LLM APIs: one thread is one conversation, and the bot keeps no state beyond what Discord holds. v3 is a rewrite on twilight and Tokio (Rust edition 2024, MSRV 1.89). As of Phase 4 the bot answers in threads: a mention in an allowed guild's channel starts a thread, and the conversation continues there without mentions. Recent image attachments are sent to vision models as Base64 image parts.
+Pythia is a Discord bot that bridges a server and LLM APIs: one thread is one conversation, and the bot keeps no state beyond what Discord holds. v3 is a rewrite on twilight and Tokio (Rust edition 2024, MSRV 1.89). A mention in an allowed guild's channel starts a thread, the conversation continues there without mentions, and recent image attachments are sent to vision models as Base64 image parts. It is shipped as a distroless Docker image (`ghcr.io/m1sk9/pythia`).
 
 ## Common Commands
 
@@ -14,7 +14,11 @@ cargo test --verbose                           # Run all tests
 cargo fmt --all -- --check                     # Check formatting
 cargo clippy --all-targets --all-features      # Lint
 CONFIG_FILE_PATH=config/config.toml cargo run  # Run (tokens from the environment or .env)
+docker build -t pythia:local .                 # Build the release image (cargo-chef → distroless)
+docker compose up -d                           # Run ghcr.io/m1sk9/pythia:v3 with ./config/config.toml
 ```
+
+Live tests are `#[ignore]`d and read `.env`: `cargo test live_ -- --ignored --nocapture` (`OPENROUTER_MODEL` overrides `llm.model`).
 
 ## Architecture
 
@@ -44,6 +48,8 @@ The code is split into three layers: **on-event** decides whether a gateway even
 - **`thread.rs`** — `thread_name` (`"{display_name} · {YYYY-MM-DD HH:mm}"` in `thread.timezone`, ≤ 100 chars), `ConversationRegistry` (thread → is a conversation; rebuilt from history after a restart), and `TurnScheduler` (one turn per thread; triggers during a turn coalesce into one more turn).
 - **`orchestrator.rs`** — `AppState` and `schedule_turns`. A turn holds a `limits.max_concurrent` semaphore permit, keeps the typing indicator alive, re-fetches the history and the starter message, selects and downloads images, calls `build_context` and the LLM, and posts the answer or an error embed. History comes from REST, which has no `member`, so speaker labels use global name → username. The first turn in a new thread does not reply to the starter message because it lives in the parent channel.
 - **`reply.rs`** — `split_message` (≤ 2000 chars, at a line break, then a space, then anywhere; open code blocks are closed and reopened), `answer_parts` (length note, `response.max_parts` cap with a note), `error_embed` per `LlmError` variant, and posting with empty `AllowedMentions` so model output never pings.
+
+**Deployment:** `Dockerfile` (repository root, referenced by `release.yaml`) builds with cargo-chef and runs on `gcr.io/distroless/cc-debian12`; TLS uses the system CA bundle shipped there, and time zones come from jiff's bundled tzdb (`tzdb-bundle-always`). `config/` and `.env` are excluded from the build context and mounted at runtime (`compose.yaml`). release-please builds `linux/amd64` and `linux/arm64` on native runners.
 
 **Bot setup:** enable the Message Content privileged intent in the developer portal and grant View Channels, Send Messages, Send Messages in Threads, Create Public Threads, and Read Message History.
 
