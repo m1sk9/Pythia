@@ -1,0 +1,9 @@
+# Codecov configuration for Pythia.
+#
+# These files are runtime glue that only runs against a live Discord gateway
+# and the OpenRouter API, so unit tests cannot exercise them. Network functions
+# in the other modules are excluded with `#[cfg_attr(coverage_nightly,
+# coverage(off))]` instead, so that their pure logic is still measured.
+ignore:
+  - "src/main.rs"
+  - "src/orchestrator.rs"

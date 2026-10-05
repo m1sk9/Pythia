@@ -32,6 +32,41 @@ jobs:
       - name: Run test
         run: cargo test --verbose
 
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Nightly so that `#[cfg_attr(coverage_nightly, coverage(off))]` takes
+      # effect: cargo-llvm-cov only sets `coverage_nightly` under nightly. This
+      # keeps live gateway / HTTP glue out of the numbers. `rust-toolchain.toml`
+      # pins stable, hence `cargo +nightly` below.
+      - name: Setup toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Setup cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "pythia/gh-actions-cache"
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate code coverage
+        run: cargo +nightly llvm-cov --all-features --workspace --codecov --output-path codecov.json
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov.json
+          fail_ci_if_error: true
+
   build:
     name: build (${{ matrix.job.target }})
     runs-on: ${{ matrix.job.os || 'ubuntu-24.04' }}

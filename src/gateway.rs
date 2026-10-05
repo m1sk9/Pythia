@@ -268,6 +268,7 @@ async fn start_thread(state: Arc<AppState>, bot_id: Id<UserMarker>, message: &Me
 }
 
 /// Resolves on Ctrl-C, or on SIGTERM where available (`docker stop`).
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
 
