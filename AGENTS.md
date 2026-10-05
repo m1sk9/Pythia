@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents when working with code in this repository.
 
 ## Project Overview
 
@@ -11,12 +11,15 @@ Pythia is a Discord bot that bridges a server and LLM APIs: one thread is one co
 ```bash
 cargo build                                    # Debug build
 cargo test --verbose                           # Run all tests
+cargo test split_message                       # Run tests whose name contains the filter
 cargo fmt --all -- --check                     # Check formatting
 cargo clippy --all-targets --all-features      # Lint
 CONFIG_FILE_PATH=config/config.toml cargo run  # Run (tokens from the environment or .env)
 docker build -t pythia:local .                 # Build the release image (cargo-chef → distroless)
 docker compose up -d                           # Run ghcr.io/m1sk9/pythia:v3 with ./config/config.toml
 ```
+
+Coverage (CI uploads it to Codecov) needs nightly, because `rust-toolchain.toml` pins stable: `cargo +nightly llvm-cov --all-features --workspace` (requires `cargo-llvm-cov` and `llvm-tools-preview`).
 
 Live tests are `#[ignore]`d and read `.env`: `cargo test live_ -- --ignored --nocapture` (`OPENROUTER_MODEL` overrides `llm.model`).
 
@@ -26,17 +29,17 @@ The code is split into three layers: **on-event** decides whether a gateway even
 
 **Entry flow:** `main.rs` → loads env + TOML config → initializes logging → builds the shared `reqwest::Client` (with `llm.timeout_secs`), looks up model capabilities, and builds the OpenRouter client → builds `AppState` (twilight-http client, channel cache, registry, scheduler, semaphore) and the shard → `gateway.rs` event loop → graceful shutdown on Ctrl-C / SIGTERM
 
-| module | layer | role | status |
-|---|---|---|---|
-| `main.rs` | wiring | config → logging → clients → gateway loop → shutdown | done |
-| `config.rs` | — | env + TOML config | done |
-| `gateway.rs` | on-event | shard loop, cache, trigger decision | done (Phase 4) |
-| `thread.rs` | on-event | thread naming, conversation registry, per-thread turn state | done (Phase 4) |
-| `context.rs` | orchestrator | Discord messages → chat messages (pure) | done (Phase 3) |
-| `attachments.rs` | orchestrator | image download / validation / base64 | done (Phase 5) |
-| `llm.rs`, `llm/openrouter.rs` | orchestrator | chat-completions shape and the OpenRouter client | done (Phase 2) |
-| `orchestrator.rs` | orchestrator | one conversation turn | done (Phase 4) |
-| `reply.rs` | interact-to | message splitting, error embeds, posting | done (Phase 4) |
+| module | layer | role |
+|---|---|---|
+| `main.rs` | wiring | config → logging → clients → gateway loop → shutdown |
+| `config.rs` | — | env + TOML config |
+| `gateway.rs` | on-event | shard loop, cache, trigger decision |
+| `thread.rs` | on-event | thread naming, conversation registry, per-thread turn state |
+| `context.rs` | orchestrator | Discord messages → chat messages (pure) |
+| `attachments.rs` | orchestrator | image download / validation / base64 |
+| `llm.rs`, `llm/openrouter.rs` | orchestrator | chat-completions shape and the OpenRouter client |
+| `orchestrator.rs` | orchestrator | one conversation turn |
+| `reply.rs` | interact-to | message splitting, error embeds, posting |
 
 **Key modules:**
 
@@ -58,7 +61,8 @@ The code is split into three layers: **on-event** decides whether a gateway even
 - **Error handling:** `thiserror::Error` for domain enums (`PythiaConfigError`, `LlmError`, `ContextError`), `anyhow::Result` for propagation up to `main`. Errors inside a turn are logged and, for LLM failures, shown as an embed; they never stop the gateway loop.
 - **Statics:** `OnceLock` for config and the bot user id.
 - **Secrets:** `EnvConfig` does not derive `Debug`; `PythiaConfig` holds no secrets and is logged in full at `debug`.
-- **Lint enforcement:** `#![deny(clippy::all)]` in `main.rs`. Code reserved for later phases carries `#[expect(dead_code, reason = ...)]` so it is flagged once it starts being used.
+- **Lint enforcement:** `#![deny(clippy::all)]` in `main.rs`.
+- **Coverage exclusions:** functions that only run against the live gateway or HTTP APIs carry `#[cfg_attr(coverage_nightly, coverage(off))]` so their module's pure logic is still measured; `main.rs` and `orchestrator.rs` are ignored wholesale in `codecov.yml`. Add the attribute to new network-only functions.
 - **Logging:** `tracing` macros. Compact or JSON format based on `[log] format`.
 - **Testing:** Unit tests in `#[cfg(test)]` modules within each source file. No integration tests. Test names state the guaranteed behavior.
 - **Comments:** Only "why not" comments, in English.
