@@ -59,10 +59,6 @@ impl OpenRouterClient {
 
     /// Sends one non-streaming chat request, retrying transient failures.
     #[cfg_attr(coverage_nightly, coverage(off))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "called by the orchestrator (#294)")
-    )]
     pub async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
         // `Bytes` so that a retry shares the body instead of copying it;
         // base64 images can make it tens of megabytes.

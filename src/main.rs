@@ -4,18 +4,19 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 mod config;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by the orchestrator (#294)")
-)]
 mod context;
 mod gateway;
 mod llm;
+mod orchestrator;
+mod reply;
+mod thread;
 
 use crate::config::{EnvConfig, LogFormat, PythiaConfig};
 use crate::llm::openrouter::{self, OpenRouterClient};
-use std::time::Duration;
+use crate::orchestrator::AppState;
+use std::{sync::Arc, time::Duration};
 use tracing_subscriber::EnvFilter;
+use twilight_cache_inmemory::{DefaultInMemoryCache, ResourceType};
 use twilight_gateway::{Intents, Shard, ShardId};
 
 #[tokio::main]
@@ -56,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
             }
         };
     tracing::info!(model = %config.llm.model, images = images_enabled, "LLM client ready");
-    let _llm = OpenRouterClient::new(
+    let llm = OpenRouterClient::new(
         http,
         envs.openrouter_api_key.clone(),
         config.llm.model.clone(),
@@ -64,12 +65,23 @@ async fn main() -> anyhow::Result<()> {
         config.llm.max_retries,
     );
 
-    let _discord = twilight_http::Client::new(envs.discord_api_token.clone());
+    let state = Arc::new(AppState {
+        http: twilight_http::Client::new(envs.discord_api_token.clone()),
+        cache: DefaultInMemoryCache::builder()
+            .resource_types(ResourceType::CHANNEL)
+            .build(),
+        llm,
+        config,
+        timezone: jiff::tz::TimeZone::get(&config.thread.timezone)?,
+        registry: Default::default(),
+        scheduler: Default::default(),
+        semaphore: tokio::sync::Semaphore::new(config.limits.max_concurrent),
+    });
     let shard = Shard::new(
         ShardId::ONE,
         envs.discord_api_token.clone(),
         Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT,
     );
 
-    gateway::run(shard).await
+    gateway::run(shard, state).await
 }

@@ -69,10 +69,6 @@ impl EnvConfig {
 
 /// Pythia configuration, validated and with every default resolved.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "sections are read by later v3 phases")
-)]
 pub struct PythiaConfig {
     pub discord: DiscordConfig,
     pub llm: LlmConfig,
@@ -148,7 +144,7 @@ impl Default for RawLlmConfig {
     not(test),
     expect(
         dead_code,
-        reason = "provider and max_output_tokens are read by the orchestrator (#294)"
+        reason = "`provider` has a single variant, so nothing branches on it yet"
     )
 )]
 pub struct LlmConfig {
@@ -339,6 +335,17 @@ impl RawConfig {
             return invalid("`limits.max_concurrent` must be at least 1".to_string());
         }
 
+        if !(1..=100).contains(&self.context.max_messages) {
+            return invalid(
+                "`context.max_messages` must be between 1 and 100 (Discord's limit per request)"
+                    .to_string(),
+            );
+        }
+
+        if self.response.max_parts == 0 {
+            return invalid("`response.max_parts` must be at least 1".to_string());
+        }
+
         Ok(PythiaConfig {
             discord: self.discord,
             llm: LlmConfig {
@@ -497,6 +504,22 @@ mod tests {
         let toml = "[llm]\nmodel = \"x\"\n[limits]\nmax_concurrent = 0";
         let msg = validation_message(toml.parse());
         assert!(msg.contains("limits.max_concurrent"), "{msg}");
+    }
+
+    #[test]
+    fn max_messages_outside_discords_range_is_rejected() {
+        for value in [0, 101] {
+            let toml = format!("[llm]\nmodel = \"x\"\n[context]\nmax_messages = {value}");
+            let msg = validation_message(toml.parse());
+            assert!(msg.contains("context.max_messages"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn zero_max_parts_is_rejected() {
+        let toml = "[llm]\nmodel = \"x\"\n[response]\nmax_parts = 0";
+        let msg = validation_message(toml.parse());
+        assert!(msg.contains("response.max_parts"), "{msg}");
     }
 
     #[test]
