@@ -1,6 +1,7 @@
 //! One conversation turn: history → context → LLM → reply.
 
 use crate::{
+    attachments::{self, ImagePolicy},
     config::PythiaConfig,
     context::{self, ContextError, ContextInput},
     llm::{ChatRequest, openrouter::OpenRouterClient},
@@ -29,6 +30,9 @@ const TYPING_INTERVAL: Duration = Duration::from_secs(8);
 /// Everything a turn needs, shared by every task.
 pub struct AppState {
     pub http: twilight_http::Client,
+    /// Shared with the LLM client; used here to download images.
+    pub web: reqwest::Client,
+    pub images: ImagePolicy,
     pub cache: DefaultInMemoryCache,
     pub llm: OpenRouterClient,
     pub config: &'static PythiaConfig,
@@ -106,11 +110,25 @@ async fn run_turn(
         None => None,
     };
 
+    let user_messages = context::user_messages_newest_first(&history, starter.as_ref(), bot_id);
+    let plan = attachments::select_images(&user_messages, &state.images);
+    let images = attachments::fetch_images(&state.web, &plan, state.images.max_image_bytes).await;
+    tracing::debug!(
+        selected = plan.fetch.len(),
+        too_large = plan.too_large.len(),
+        fetched = images
+            .values()
+            .filter(|outcome| matches!(outcome, attachments::ImageOutcome::Fetched { .. }))
+            .count(),
+        "images"
+    );
+
     let built = match context::build_context(ContextInput {
         history_newest_first: &history,
         starter: starter.as_ref(),
         bot_id,
         max_chars: state.config.context.max_chars,
+        images: &images,
     }) {
         Ok(built) => built,
         Err(ContextError::NoUserMessage) => {

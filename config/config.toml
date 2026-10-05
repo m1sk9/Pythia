@@ -32,8 +32,11 @@ max_parts = 5
 [attachments]
 ## Disabled automatically when the model does not accept images.
 images = true
+## Images sent per turn, newest first.
 max_images = 4
+## Only images on this many of the newest user messages are sent.
 recent_messages = 5
+## Larger images are left out with a note.
 max_image_bytes = 5242880
 
 [thread]
