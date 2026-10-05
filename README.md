@@ -1,9 +1,9 @@
 # Pythia
 
 [![CI](https://github.com/m1sk9/Pythia/actions/workflows/ci.yaml/badge.svg)](https://github.com/m1sk9/Pythia/actions/workflows/ci.yaml)
-[![codecov](https://codecov.io/gh/m1sk9/Pythia/graph/badge.svg)](https://codecov.io/gh/m1sk9/Pythia)
 [![Release Pythia](https://github.com/m1sk9/Pythia/actions/workflows/release.yaml/badge.svg)](https://github.com/m1sk9/Pythia/actions/workflows/release.yaml)
 [![Apache License 2.0](https://img.shields.io/github/license/m1sk9/Pythia?color=%239944ee)](https://github.com/m1sk9/Pythia/blob/main/LICENSE)
+[![codecov](https://codecov.io/gh/m1sk9/Pythia/graph/badge.svg)](https://codecov.io/gh/m1sk9/Pythia)
 
 A Discord bot that bridges your server and LLM APIs.
 
@@ -25,7 +25,7 @@ docker pull ghcr.io/m1sk9/pythia:v3.0.0
 
 [_API Support: requires Discord API v10_](https://discord.com/developers/docs/reference#api-versioning)
 
-## What it does
+## Features
 
 - **One thread is one conversation.** Mention Pythia in a channel and it opens a thread from your message and answers there. Keep talking in the thread without mentioning it; it reads the thread history every time, so it keeps no database and survives restarts.
 - **Joins existing threads.** Mention Pythia in any thread and it answers there too, and keeps answering without further mentions.
@@ -35,6 +35,19 @@ docker pull ghcr.io/m1sk9/pythia:v3.0.0
 - **Powered by [OpenRouter](https://openrouter.ai/).** Any chat model on OpenRouter can be used.
 
 Answers longer than Discord's 2000-character limit are split into several messages, and model output never pings users or roles. Failures (timeouts, rate limits, provider errors) are shown as an embed with the status, provider message, and request ID.
+
+## Todo
+
+Planned for v3.x:
+
+- [ ] Server-wide knowledge through a server overview and read-only tools ([#309](https://github.com/m1sk9/Pythia/issues/309))
+- [ ] Web search and web fetch through OpenRouter server tools ([#317](https://github.com/m1sk9/Pythia/issues/317))
+- [ ] Write tools with confirmation buttons and audit log reasons ([#310](https://github.com/m1sk9/Pythia/issues/310))
+- [ ] Code execution in a sandbox and external tools ([#311](https://github.com/m1sk9/Pythia/issues/311))
+- [ ] OpenAI-compatible and Anthropic backends ([#312](https://github.com/m1sk9/Pythia/issues/312))
+- [ ] Cost aggregation per guild ([#314](https://github.com/m1sk9/Pythia/issues/314))
+- [ ] PDF and text file attachments ([#315](https://github.com/m1sk9/Pythia/issues/315))
+- [ ] Downscaling large images ([#316](https://github.com/m1sk9/Pythia/issues/316))
 
 ## Setup
 
@@ -52,12 +65,12 @@ Answers longer than Discord's 2000-character limit are split into several messag
 
 Secrets and the path to the configuration file come from environment variables (a `.env` file is read when present):
 
-| variable | required | description |
-|---|---|---|
-| `DISCORD_API_TOKEN` | yes | Bot token |
-| `OPENROUTER_API_KEY` | yes | OpenRouter API key |
-| `CONFIG_FILE_PATH` | yes | Path to `config.toml` |
-| `RUST_LOG` | no | Log filter; overrides `[log] level` when set |
+| variable             | required | description                                  |
+| -------------------- | -------- | -------------------------------------------- |
+| `DISCORD_API_TOKEN`  | yes      | Bot token                                    |
+| `OPENROUTER_API_KEY` | yes      | OpenRouter API key                           |
+| `CONFIG_FILE_PATH`   | yes      | Path to `config.toml`                        |
+| `RUST_LOG`           | no       | Log filter; overrides `[log] level` when set |
 
 Everything else lives in `config.toml`. Start from [`config/config.toml`](./config/config.toml), which documents every key and its default. At minimum, set:
 
@@ -113,7 +126,7 @@ The image is built on distroless and is published for `linux/amd64` and `linux/a
 
 Published under [Apache License 2.0](./LICENSE).
 
-Pythia was originally developed as ichiyoAI under the [Approvers](https://github.com/approvers) organization († 限界開発鯖 †) and was relicensed from the MIT License to the Apache License 2.0 with the consent of its contributors.
+Pythia was originally developed as ichiyoAI under the [Approvers](https://github.com/approvers) organization and was relicensed from the MIT License to the Apache License 2.0 with the consent of its contributors.
 
 <sub>
     © 2023 - 2026 m1sk9 and contributors
