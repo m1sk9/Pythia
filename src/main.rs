@@ -3,6 +3,7 @@
 #![deny(clippy::all)]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+mod attachments;
 mod config;
 mod context;
 mod gateway;
@@ -11,6 +12,7 @@ mod orchestrator;
 mod reply;
 mod thread;
 
+use crate::attachments::ImagePolicy;
 use crate::config::{EnvConfig, LogFormat, PythiaConfig};
 use crate::llm::openrouter::{self, OpenRouterClient};
 use crate::orchestrator::AppState;
@@ -58,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         };
     tracing::info!(model = %config.llm.model, images = images_enabled, "LLM client ready");
     let llm = OpenRouterClient::new(
-        http,
+        http.clone(),
         envs.openrouter_api_key.clone(),
         config.llm.model.clone(),
         config.llm.system_prompt.clone(),
@@ -67,6 +69,13 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         http: twilight_http::Client::new(envs.discord_api_token.clone()),
+        web: http,
+        images: ImagePolicy {
+            enabled: images_enabled,
+            max_images: config.attachments.max_images,
+            recent_messages: config.attachments.recent_messages,
+            max_image_bytes: config.attachments.max_image_bytes,
+        },
         cache: DefaultInMemoryCache::builder()
             .resource_types(ResourceType::CHANNEL)
             .build(),

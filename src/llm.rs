@@ -24,10 +24,6 @@ pub struct ChatMessage {
 }
 
 /// Message content: plain text, or a list of parts when images are attached.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`Parts` is built from image attachments (#295)")
-)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Content {
     Text(String),
@@ -35,10 +31,6 @@ pub enum Content {
 }
 
 /// One part of a multi-part message.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "built from image attachments (#295)")
-)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Part {
     Text(String),

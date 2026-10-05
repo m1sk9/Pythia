@@ -3,7 +3,10 @@
 //! Everything here is pure: the orchestrator fetches the messages and passes
 //! them in, so the rules can be tested without Discord.
 
-use crate::llm::{ChatMessage, Content, Role};
+use crate::{
+    attachments::ImageOutcome,
+    llm::{ChatMessage, Content, Part, Role},
+};
 use std::collections::HashMap;
 use twilight_model::{
     channel::{
@@ -12,7 +15,7 @@ use twilight_model::{
     },
     id::{
         Id,
-        marker::{MessageMarker, UserMarker},
+        marker::{AttachmentMarker, MessageMarker, UserMarker},
     },
 };
 
@@ -27,8 +30,11 @@ pub struct ContextInput<'a> {
     /// The parent-channel message the thread was started from, if any.
     pub starter: Option<&'a Message>,
     pub bot_id: Id<UserMarker>,
-    /// Character budget for all messages; the system prompt does not count.
+    /// Character budget for all messages; the system prompt and images do not count.
     pub max_chars: usize,
+    /// Downloaded or rejected images; image attachments without an entry
+    /// are rendered as plain placeholders.
+    pub images: &'a HashMap<Id<AttachmentMarker>, ImageOutcome>,
 }
 
 /// The conversation to send, oldest first, and the message to reply to.
@@ -49,20 +55,40 @@ pub enum ContextError {
 struct Entry {
     role: Role,
     text: String,
+    images: Vec<Part>,
     id: Id<MessageMarker>,
+}
+
+/// The starter (unless the history already has it) followed by the history, oldest first.
+fn chronological<'a>(
+    history_newest_first: &'a [Message],
+    starter: Option<&'a Message>,
+) -> impl Iterator<Item = &'a Message> + Clone {
+    let starter = starter.filter(|starter| history_newest_first.iter().all(|m| m.id != starter.id));
+    starter.into_iter().chain(history_newest_first.iter().rev())
+}
+
+/// The user messages that [`build_context`] keeps, newest first, before
+/// trimming. Images are selected from these.
+pub fn user_messages_newest_first<'a>(
+    history_newest_first: &'a [Message],
+    starter: Option<&'a Message>,
+    bot_id: Id<UserMarker>,
+) -> Vec<&'a Message> {
+    let no_names = HashMap::new();
+    let mut messages: Vec<_> = chronological(history_newest_first, starter)
+        .filter(|message| {
+            to_entry(message, bot_id, &no_names, &HashMap::new())
+                .is_some_and(|entry| entry.role == Role::User)
+        })
+        .collect();
+    messages.reverse();
+    messages
 }
 
 /// Builds the chat messages for one turn.
 pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextError> {
-    let starter = input.starter.filter(|starter| {
-        input
-            .history_newest_first
-            .iter()
-            .all(|m| m.id != starter.id)
-    });
-    let chronological = starter
-        .into_iter()
-        .chain(input.history_newest_first.iter().rev());
+    let chronological = chronological(input.history_newest_first, input.starter);
     let speakers: HashMap<_, _> = chronological
         .clone()
         .map(|message| (message.author.id, display_name(message)))
@@ -70,7 +96,7 @@ pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextErr
 
     let mut entries: Vec<Entry> = Vec::new();
     for message in chronological {
-        let Some(entry) = to_entry(message, input.bot_id, &speakers) else {
+        let Some(entry) = to_entry(message, input.bot_id, &speakers, input.images) else {
             continue;
         };
         match entries.last_mut() {
@@ -94,7 +120,15 @@ pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextErr
             .into_iter()
             .map(|entry| ChatMessage {
                 role: entry.role,
-                content: Content::Text(entry.text),
+                content: if entry.images.is_empty() {
+                    Content::Text(entry.text)
+                } else {
+                    Content::Parts(
+                        std::iter::once(Part::Text(entry.text))
+                            .chain(entry.images)
+                            .collect(),
+                    )
+                },
             })
             .collect(),
         reply_to,
@@ -105,6 +139,7 @@ fn to_entry(
     message: &Message,
     bot_id: Id<UserMarker>,
     speakers: &HashMap<Id<UserMarker>, &str>,
+    images: &HashMap<Id<AttachmentMarker>, ImageOutcome>,
 ) -> Option<Entry> {
     let author = &message.author;
     if author.system == Some(true)
@@ -118,6 +153,7 @@ fn to_entry(
         return (!message.content.is_empty()).then(|| Entry {
             role: Role::Assistant,
             text: message.content.clone(),
+            images: Vec::new(),
             id: message.id,
         });
     }
@@ -126,14 +162,39 @@ fn to_entry(
     if content.is_empty() && message.attachments.is_empty() {
         return None;
     }
+    let mut parts = Vec::new();
     let body: Vec<String> = (!content.is_empty())
         .then_some(content)
         .into_iter()
-        .chain(message.attachments.iter().map(attachment_placeholder))
+        .chain(
+            message
+                .attachments
+                .iter()
+                .map(|attachment| match images.get(&attachment.id) {
+                    Some(ImageOutcome::Fetched { mime, base64 }) => {
+                        parts.push(Part::ImageDataUrl {
+                            mime: (*mime).to_string(),
+                            base64: base64.clone(),
+                        });
+                        attachment_placeholder(attachment)
+                    }
+                    Some(ImageOutcome::TooLarge) => {
+                        format!("[image: {} (omitted: too large)]", attachment.filename)
+                    }
+                    Some(ImageOutcome::DownloadFailed) => {
+                        format!(
+                            "[image: {} (omitted: download failed)]",
+                            attachment.filename
+                        )
+                    }
+                    None => attachment_placeholder(attachment),
+                }),
+        )
         .collect();
     Some(Entry {
         role: Role::User,
         text: format!("{}: {}", display_name(message), body.join("\n")),
+        images: parts,
         id: message.id,
     })
 }
@@ -350,7 +411,100 @@ mod tests {
             starter,
             bot_id: Id::new(BOT),
             max_chars,
+            images: &HashMap::new(),
         })
+    }
+
+    fn build_with_images(
+        history_newest_first: &[Message],
+        images: &HashMap<Id<AttachmentMarker>, ImageOutcome>,
+    ) -> BuiltContext {
+        build_context(ContextInput {
+            history_newest_first,
+            starter: None,
+            bot_id: Id::new(BOT),
+            max_chars: 32_000,
+            images,
+        })
+        .unwrap()
+    }
+
+    fn image_attachment(id: u64, filename: &str) -> Attachment {
+        let mut attachment = attachment(filename, Some("image/png"));
+        attachment.id = Id::new(id);
+        attachment
+    }
+
+    #[test]
+    fn fetched_image_becomes_an_image_part_after_the_text() {
+        let mut with_image = message(1, ALICE, "what is this?");
+        with_image.attachments = vec![image_attachment(7, "shot.png")];
+        let images = HashMap::from([(
+            Id::new(7),
+            ImageOutcome::Fetched {
+                mime: "image/png",
+                base64: "AAAA".to_string(),
+            },
+        )]);
+
+        let context = build_with_images(&[with_image], &images);
+
+        assert_eq!(
+            context.messages,
+            [ChatMessage {
+                role: Role::User,
+                content: Content::Parts(vec![
+                    Part::Text("alice: what is this?\n[image: shot.png]".to_string()),
+                    Part::ImageDataUrl {
+                        mime: "image/png".to_string(),
+                        base64: "AAAA".to_string(),
+                    },
+                ]),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejected_images_render_why_they_were_omitted() {
+        let mut with_images = message(1, ALICE, "look");
+        with_images.attachments = vec![
+            image_attachment(7, "big.png"),
+            image_attachment(8, "broken.png"),
+            image_attachment(9, "old.png"),
+        ];
+        let images = HashMap::from([
+            (Id::new(7), ImageOutcome::TooLarge),
+            (Id::new(8), ImageOutcome::DownloadFailed),
+        ]);
+
+        assert_eq!(
+            texts(&build_with_images(&[with_images], &images)),
+            [(
+                Role::User,
+                "alice: look\n[image: big.png (omitted: too large)]\n[image: broken.png (omitted: download failed)]\n[image: old.png]"
+            )]
+        );
+    }
+
+    #[test]
+    fn image_candidates_are_the_kept_user_messages_newest_first() {
+        let mut other_bot = message(5, BOB, "beep");
+        other_bot.author.bot = true;
+        let mention_only = message(4, ALICE, "<@1000>");
+        let history = [
+            other_bot,
+            mention_only,
+            message(3, BOT, "answer"),
+            message(2, ALICE, "second"),
+        ];
+        let starter = message(1, BOB, "first");
+
+        let ids: Vec<_> = user_messages_newest_first(&history, Some(&starter), Id::new(BOT))
+            .iter()
+            .map(|m| m.id.get())
+            .collect();
+
+        assert_eq!(ids, [2, 1]);
     }
 
     fn texts(context: &BuiltContext) -> Vec<(Role, &str)> {
