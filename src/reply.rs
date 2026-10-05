@@ -25,8 +25,9 @@ const ERROR_COLOR: u32 = 0xED4245;
 /// Discord's limit on an embed field value.
 const MAX_FIELD_CHARS: usize = 1024;
 
-/// Splits `text` into parts of at most `limit` characters, preferring line
-/// breaks, then spaces. A code block open at a split is closed at the end of
+/// Splits `text` into parts of at most `limit` characters, preferring
+/// paragraph breaks in the second half of the part, then line breaks, then
+/// spaces. A code block open at a split is closed at the end of
 /// the part and reopened, with the same info string, at the start of the next.
 pub fn split_message(text: &str, limit: usize) -> Vec<String> {
     let mut parts = Vec::new();
@@ -39,14 +40,20 @@ pub fn split_message(text: &str, limit: usize) -> Vec<String> {
 
         let window_end = byte_index_of_char(&rest, limit.saturating_sub(CLOSE_FENCE.len()).max(1));
         let window = &rest[..window_end];
-        let (cut, skip) = match window
-            .rfind('\n')
-            .filter(|&i| i > 0)
-            .or_else(|| window.rfind(' ').filter(|&i| i > 0))
-        {
-            Some(i) => (i, 1),
-            None => (window_end, 0),
+        // An earlier paragraph break would leave short parts and reach
+        // `response.max_parts` sooner than needed.
+        let paragraph = window
+            .rfind("\n\n")
+            .filter(|&i| i >= window.len() / 2)
+            .map(|i| (i, 2));
+        let line_or_space = || {
+            window
+                .rfind('\n')
+                .filter(|&i| i > 0)
+                .or_else(|| window.rfind(' ').filter(|&i| i > 0))
+                .map(|i| (i, 1))
         };
+        let (cut, skip) = paragraph.or_else(line_or_space).unwrap_or((window_end, 0));
 
         let mut part = rest[..cut].to_string();
         let tail = &rest[cut + skip..];
@@ -260,6 +267,42 @@ mod tests {
         assert_eq!(
             split_message(&text, 2000),
             ["a".repeat(1500), "b".repeat(501)]
+        );
+    }
+
+    #[test]
+    fn paragraph_break_is_preferred_over_a_later_line_break() {
+        let text = format!(
+            "{}\n\n{}\n{}",
+            "a".repeat(1000),
+            "b".repeat(500),
+            "c".repeat(600)
+        );
+
+        assert_eq!(
+            split_message(&text, 2000),
+            [
+                "a".repeat(1000),
+                format!("{}\n{}", "b".repeat(500), "c".repeat(600))
+            ]
+        );
+    }
+
+    #[test]
+    fn paragraph_break_in_the_first_half_falls_back_to_the_last_line_break() {
+        let text = format!(
+            "{}\n\n{}\n{}",
+            "a".repeat(300),
+            "b".repeat(1500),
+            "c".repeat(300)
+        );
+
+        assert_eq!(
+            split_message(&text, 2000),
+            [
+                format!("{}\n\n{}", "a".repeat(300), "b".repeat(1500)),
+                "c".repeat(300)
+            ]
         );
     }
 
