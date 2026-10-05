@@ -11,12 +11,17 @@ allowed_guilds = [123456789012345678]
 provider = "openrouter"
 ## Required. Pythia refuses to start without it (models differ widely in price).
 model = "<openrouter model id>"
+## Optional. Tried in order when `model` fails, rate limits (429) included.
+## Billed at the price of the model that answered. Images are sent only when
+## every model accepts them.
+# fallback_models = ["<openrouter model id>"]
 ## System prompt: either inline or from a file. Setting both is an error.
 system_prompt = "You are Pythia, a helpful assistant on Discord."
 # system_prompt_file = "/config/system_prompt.md"
 max_output_tokens = 4096
 timeout_secs = 120
-## Retries apply to 429 / 5xx / connection errors only.
+## Retries apply to 429 / 5xx / connection errors only. A Retry-After over
+## 30 seconds fails the turn instead.
 max_retries = 2
 
 [context]

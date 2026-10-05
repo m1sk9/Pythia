@@ -111,8 +111,9 @@ The image is built on distroless and is published for `linux/amd64` and `linux/a
 
 - **Empty `discord.allowed_guilds` refuses to start.** Pythia never answers in a server you did not list.
 - **`llm.model` is required.** Models differ widely in price, so there is no default.
+- **Fallbacks are opt-in.** List models in `llm.fallback_models` and OpenRouter tries them in order when `llm.model` fails, rate limits included. Each answer is billed at the price of the model that wrote it.
 - **Bounded usage.** At most `limits.max_concurrent` answers are generated at once, each conversation is trimmed to `context.max_chars` characters (newest messages win), and each answer is capped at `llm.max_output_tokens` tokens and `response.max_parts` messages.
-- **Images are opt-out.** Set `attachments.images = false` to send only text. Images are also disabled automatically when the model does not accept them.
+- **Images are opt-out.** Set `attachments.images = false` to send only text. Images are also disabled automatically when the model, or any fallback model, does not accept them.
 - **Other bots are ignored**, as are locked threads and system messages.
 
 ## Not supported
