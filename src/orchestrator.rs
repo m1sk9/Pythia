@@ -4,7 +4,7 @@ use crate::{
     attachments::{self, ImagePolicy},
     config::PythiaConfig,
     context::{self, ContextError, ContextInput},
-    llm::{ChatRequest, openrouter::OpenRouterClient},
+    llm::{ChatRequest, ServerTool, openrouter::OpenRouterClient},
     reply,
     thread::{ConversationRegistry, TurnScheduler},
 };
@@ -33,6 +33,8 @@ pub struct AppState {
     /// Shared with the LLM client; used here to download images.
     pub web: reqwest::Client,
     pub images: ImagePolicy,
+    /// Server tools sent with every request; empty when disabled.
+    pub tools: Vec<ServerTool>,
     pub cache: DefaultInMemoryCache,
     pub llm: OpenRouterClient,
     pub config: &'static PythiaConfig,
@@ -143,6 +145,7 @@ async fn run_turn(
     let request = ChatRequest {
         messages: built.messages,
         max_output_tokens: state.config.llm.max_output_tokens,
+        tools: state.tools.clone(),
     };
     let posted = match state.llm.chat(&request).await {
         Ok(response) => {
@@ -153,6 +156,9 @@ async fn run_turn(
                 prompt_tokens = usage.map(|u| u.prompt_tokens),
                 completion_tokens = usage.map(|u| u.completion_tokens),
                 cost = usage.and_then(|u| u.cost),
+                web_search_requests = usage.and_then(|u| u.web_search_requests),
+                server_tool_calls = usage.and_then(|u| u.server_tool_calls),
+                citations = response.citations.len(),
                 finish = ?response.finish,
                 elapsed_ms = started.elapsed().as_millis(),
                 "answered"

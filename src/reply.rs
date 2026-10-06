@@ -2,7 +2,7 @@
 //!
 //! Splitting and embed building are pure; only `post_*` touch the network.
 
-use crate::llm::{ChatResponse, Finish, LlmError};
+use crate::llm::{ChatResponse, Citation, Finish, LlmError, Usage};
 use twilight_model::{
     channel::message::{AllowedMentions, Embed},
     id::{
@@ -16,6 +16,13 @@ use twilight_util::builder::embed::{EmbedBuilder, EmbedFieldBuilder};
 pub const MESSAGE_LIMIT: usize = 2000;
 const OUTPUT_TRUNCATED_NOTE: &str = "\n\n(output truncated: max_output_tokens reached)";
 const RESPONSE_TRUNCATED_NOTE: &str = "\n\n(response truncated: too long for Discord)";
+const SOURCES_HEADING: &str = "-# Sources";
+const SEARCHES_ICON: &str = "🔍";
+const TOOL_CALLS_ICON: &str = "🔧";
+/// How each line of the footer under an answer starts.
+const FOOTER_STARTS: [&str; 3] = ["-# Sources\n", "-# 🔍 ", "-# 🔧 "];
+const MAX_SOURCES: usize = 5;
+const MAX_SOURCE_TITLE_CHARS: usize = 100;
 const FENCE: &str = "```";
 const CLOSE_FENCE: &str = "\n```";
 /// Longer info strings are not repeated when a fence is reopened, so that the
@@ -92,11 +99,23 @@ fn open_fence_info(text: &str) -> Option<&str> {
 }
 
 /// The messages to post for an answer: the truncation note when the model hit
-/// `max_output_tokens`, split into at most `max_parts` messages.
+/// `max_output_tokens` and a footer with the server tools used and the cited
+/// sources, split into at most `max_parts` messages.
 pub fn answer_parts(response: &ChatResponse, max_parts: usize) -> Vec<String> {
     let mut text = response.text.clone();
     if response.finish == Finish::Length {
         text.push_str(OUTPUT_TRUNCATED_NOTE);
+    }
+    let footer: Vec<String> = [
+        tool_activity(response.usage.as_ref()),
+        sources_list(&response.citations),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !footer.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&footer.join("\n"));
     }
 
     let mut parts = split_message(&text, MESSAGE_LIMIT);
@@ -110,6 +129,91 @@ pub fn answer_parts(response: &ChatResponse, max_parts: usize) -> Vec<String> {
         }
     }
     parts
+}
+
+/// A small-text line counting the searches and tool calls, when there were any.
+fn tool_activity(usage: Option<&Usage>) -> Option<String> {
+    let usage = usage?;
+    let items: Vec<String> = [
+        (
+            SEARCHES_ICON,
+            usage.web_search_requests,
+            "search",
+            "searches",
+        ),
+        (
+            TOOL_CALLS_ICON,
+            usage.server_tool_calls,
+            "tool call",
+            "tool calls",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(icon, count, one, many)| {
+        let count = count.filter(|&count| count > 0)?;
+        Some(format!(
+            "{icon} {count} {}",
+            if count == 1 { one } else { many }
+        ))
+    })
+    .collect();
+    (!items.is_empty()).then(|| format!("-# {}", items.join(" · ")))
+}
+
+/// An earlier answer of the bot without the footer posted under it. The
+/// footer is left out of the context because the model would otherwise copy
+/// it and write sources that it never looked up.
+pub fn without_footer(content: &str) -> &str {
+    let start = FOOTER_STARTS
+        .iter()
+        .filter_map(|start| {
+            if content.starts_with(start) {
+                Some(0)
+            } else {
+                content.find(&format!("\n\n{start}"))
+            }
+        })
+        .min();
+    start.map_or(content, |i| content[..i].trim_end())
+}
+
+/// A small-text list of the first [`MAX_SOURCES`] http(s) citations, linked
+/// in angle brackets so that Discord does not embed every page.
+fn sources_list(citations: &[Citation]) -> Option<String> {
+    let lines: Vec<String> = citations
+        .iter()
+        .filter_map(|citation| {
+            let url = reqwest::Url::parse(&citation.url).ok()?;
+            matches!(url.scheme(), "http" | "https").then_some((citation, url))
+        })
+        .take(MAX_SOURCES)
+        .enumerate()
+        .map(|(i, (citation, url))| {
+            let label = match &citation.title {
+                Some(title) => escape_link_text(title),
+                None => url.host_str().unwrap_or(url.as_str()).to_string(),
+            };
+            format!("-# {}. [{label}](<{url}>)", i + 1)
+        })
+        .collect();
+    (!lines.is_empty()).then(|| format!("{SOURCES_HEADING}\n{}", lines.join("\n")))
+}
+
+/// Keeps a title on one line and inside the brackets of a markdown link.
+fn escape_link_text(title: &str) -> String {
+    let one_line = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = one_line.chars();
+    let mut escaped = String::new();
+    for c in chars.by_ref().take(MAX_SOURCE_TITLE_CHARS) {
+        if matches!(c, '[' | ']' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    if chars.next().is_some() {
+        escaped.push('…');
+    }
+    escaped
 }
 
 /// The embed shown when a turn fails. Holds nothing that is not already
@@ -247,6 +351,20 @@ mod tests {
             model: "test/model".to_string(),
             request_id: None,
             usage: None,
+            citations: Vec::new(),
+        }
+    }
+
+    fn cited(text: &str, citations: &[(&str, Option<&str>)]) -> ChatResponse {
+        ChatResponse {
+            citations: citations
+                .iter()
+                .map(|(url, title)| Citation {
+                    url: url.to_string(),
+                    title: title.map(str::to_string),
+                })
+                .collect(),
+            ..response(text, Finish::Stop)
         }
     }
 
@@ -354,6 +472,177 @@ mod tests {
             parts,
             ["partial\n\n(output truncated: max_output_tokens reached)"]
         );
+    }
+
+    #[test]
+    fn answer_without_citations_has_no_source_list() {
+        assert_eq!(answer_parts(&cited("answer", &[]), 5), ["answer"]);
+    }
+
+    #[test]
+    fn citations_are_listed_as_small_unembedded_links_under_the_answer() {
+        let response = cited(
+            "answer",
+            &[
+                ("https://a.example/page", Some("Page A")),
+                ("https://b.example/x?q=1", None),
+            ],
+        );
+
+        assert_eq!(
+            answer_parts(&response, 5),
+            ["answer\n\n-# Sources\n\
+              -# 1. [Page A](<https://a.example/page>)\n\
+              -# 2. [b.example](<https://b.example/x?q=1>)"]
+        );
+    }
+
+    #[test]
+    fn source_list_follows_the_output_truncated_note() {
+        let response = ChatResponse {
+            finish: Finish::Length,
+            ..cited("partial", &[("https://a.example/", Some("A"))])
+        };
+
+        assert_eq!(
+            answer_parts(&response, 5),
+            [
+                "partial\n\n(output truncated: max_output_tokens reached)\n\n\
+              -# Sources\n-# 1. [A](<https://a.example/>)"
+            ]
+        );
+    }
+
+    #[test]
+    fn citations_without_an_http_url_leave_no_source_list() {
+        let response = cited(
+            "answer",
+            &[("not a url", Some("x")), ("ftp://a.example/", None)],
+        );
+
+        assert_eq!(answer_parts(&response, 5), ["answer"]);
+    }
+
+    #[test]
+    fn source_list_keeps_the_first_five_http_links() {
+        let urls: Vec<String> = (0..7).map(|i| format!("https://{i}.example/")).collect();
+        let mut citations: Vec<(&str, Option<&str>)> = vec![("javascript:alert(1)", None)];
+        citations.extend(urls.iter().map(|url| (url.as_str(), None)));
+
+        let parts = answer_parts(&cited("answer", &citations), 5);
+
+        let lines: Vec<&str> = parts[0].lines().filter(|l| l.starts_with("-# ")).collect();
+        assert_eq!(lines.len(), 6, "{parts:?}");
+        assert_eq!(lines[1], "-# 1. [0.example](<https://0.example/>)");
+        assert_eq!(lines[5], "-# 5. [4.example](<https://4.example/>)");
+    }
+
+    #[test]
+    fn source_titles_stay_on_one_line_inside_the_link_text() {
+        let long = "t".repeat(150);
+        let response = cited(
+            "answer",
+            &[
+                ("https://a.example/", Some("[Draft]\nnotes \\ more")),
+                ("https://b.example/", Some(&long)),
+            ],
+        );
+
+        let parts = answer_parts(&response, 5);
+
+        assert!(
+            parts[0].contains("-# 1. [\\[Draft\\] notes \\\\ more](<https://a.example/>)"),
+            "{parts:?}"
+        );
+        assert!(
+            parts[0].contains(&format!(
+                "-# 2. [{}…](<https://b.example/>)",
+                "t".repeat(100)
+            )),
+            "{parts:?}"
+        );
+    }
+
+    fn used_tools(searches: Option<u64>, tool_calls: Option<u64>) -> Option<Usage> {
+        Some(Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cost: None,
+            web_search_requests: searches,
+            server_tool_calls: tool_calls,
+        })
+    }
+
+    #[test]
+    fn tool_activity_counts_searches_and_tool_calls_above_the_sources() {
+        let response = ChatResponse {
+            usage: used_tools(Some(2), Some(3)),
+            ..cited("answer", &[("https://a.example/", Some("A"))])
+        };
+
+        assert_eq!(
+            answer_parts(&response, 5),
+            ["answer\n\n-# 🔍 2 searches · 🔧 3 tool calls\n\
+              -# Sources\n-# 1. [A](<https://a.example/>)"]
+        );
+    }
+
+    #[test]
+    fn tool_activity_leaves_out_zero_and_unreported_counts_and_uses_the_singular() {
+        let line = |usage| {
+            let response = ChatResponse {
+                usage,
+                ..cited("answer", &[])
+            };
+            answer_parts(&response, 5).swap_remove(0)
+        };
+
+        assert_eq!(
+            line(used_tools(Some(1), Some(1))),
+            "answer\n\n-# 🔍 1 search · 🔧 1 tool call"
+        );
+        assert_eq!(
+            line(used_tools(Some(0), Some(2))),
+            "answer\n\n-# 🔧 2 tool calls"
+        );
+        assert_eq!(line(used_tools(None, None)), "answer");
+        assert_eq!(line(None), "answer");
+    }
+
+    #[test]
+    fn footer_is_removed_from_every_part_of_a_posted_answer() {
+        let text = format!("{}\n\n{}", "a".repeat(1500), "b".repeat(480));
+        let response = ChatResponse {
+            usage: used_tools(Some(1), Some(2)),
+            ..cited(&text, &[("https://a.example/", Some("A"))])
+        };
+
+        let parts = answer_parts(&response, 5);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        let kept: Vec<&str> = parts
+            .iter()
+            .map(|part| without_footer(part))
+            .filter(|part| !part.is_empty())
+            .collect();
+        assert_eq!(kept, [text.as_str()]);
+    }
+
+    #[test]
+    fn answer_without_a_footer_is_kept_whole() {
+        let text = "intro\n\n-# small print the model wrote\n\nend";
+        assert_eq!(without_footer(text), text);
+    }
+
+    #[test]
+    fn source_list_counts_against_max_parts() {
+        let text = "a".repeat(1990);
+        let response = cited(&text, &[("https://a.example/", Some("A"))]);
+
+        assert_eq!(answer_parts(&response, 2).len(), 2);
+        let cut = answer_parts(&response, 1);
+        assert_eq!(cut.len(), 1);
+        assert!(!cut[0].contains(SOURCES_HEADING), "{cut:?}");
     }
 
     #[test]

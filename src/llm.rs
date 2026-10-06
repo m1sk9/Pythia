@@ -37,11 +37,54 @@ pub enum Part {
     ImageDataUrl { mime: String, base64: String },
 }
 
+/// A tool that the provider runs on its own while the model answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerTool {
+    /// `None` leaves the engine or mode to the provider.
+    WebSearch {
+        engine: Option<WebSearchEngine>,
+        /// Engine-specific, e.g. `fast` for Parallel.
+        mode: Option<String>,
+    },
+    /// `None` leaves the engine to the provider.
+    WebFetch {
+        engine: Option<WebFetchEngine>,
+    },
+    Datetime {
+        timezone: String,
+    },
+}
+
+/// Backend that runs web searches.
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WebSearchEngine {
+    Auto,
+    Native,
+    Exa,
+    Firecrawl,
+    Parallel,
+    Perplexity,
+}
+
+/// Backend that fetches web pages.
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WebFetchEngine {
+    Auto,
+    Native,
+    Exa,
+    OpenRouter,
+    Firecrawl,
+    Parallel,
+}
+
 /// A chat request. The model and system prompt are supplied by the client.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub max_output_tokens: u32,
+    pub tools: Vec<ServerTool>,
 }
 
 /// A successful chat completion.
@@ -53,6 +96,15 @@ pub struct ChatResponse {
     pub model: String,
     pub request_id: Option<String>,
     pub usage: Option<Usage>,
+    /// Sources the answer cites, without duplicate URLs, in order of appearance.
+    pub citations: Vec<Citation>,
+}
+
+/// A web page cited by an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Citation {
+    pub url: String,
+    pub title: Option<String>,
 }
 
 /// Why generation stopped.
@@ -72,12 +124,17 @@ pub struct Usage {
     pub total_tokens: u64,
     /// Cost in credits, when the provider reports it.
     pub cost: Option<f64>,
+    /// Web searches run by the provider, when it reports them.
+    pub web_search_requests: Option<u64>,
+    /// Server tool calls of every kind, searches included, when reported.
+    pub server_tool_calls: Option<u64>,
 }
 
 /// What the configured model accepts as input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelCapabilities {
     pub accepts_images: bool,
+    pub accepts_tools: bool,
 }
 
 /// A failed chat request. `retries` is the number of retries made before giving up.

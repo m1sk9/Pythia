@@ -341,6 +341,7 @@ mod tests {
     /// `OPENROUTER_MODEL`, or `llm.model`, to describe it. Reads `.env` like `live_ping`.
     #[tokio::test]
     #[ignore = "calls the live OpenRouter API and downloads an image"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn live_image_round_trip() {
         use crate::llm::{
             ChatMessage, ChatRequest, Content, Part, Role, openrouter::OpenRouterClient,
@@ -387,6 +388,7 @@ mod tests {
                 ]),
             }],
             max_output_tokens: 256,
+            tools: Vec::new(),
         };
         println!("{:#?}", client.chat(&request).await.unwrap());
     }

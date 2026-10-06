@@ -6,6 +6,7 @@
 use crate::{
     attachments::ImageOutcome,
     llm::{ChatMessage, Content, Part, Role},
+    reply::without_footer,
 };
 use std::collections::HashMap;
 use twilight_model::{
@@ -150,9 +151,10 @@ fn to_entry(
     }
 
     if author.id == bot_id {
-        return (!message.content.is_empty()).then(|| Entry {
+        let text = without_footer(&message.content);
+        return (!text.is_empty()).then(|| Entry {
             role: Role::Assistant,
-            text: message.content.clone(),
+            text: text.to_string(),
             images: Vec::new(),
             id: message.id,
         });
@@ -633,6 +635,30 @@ mod tests {
                 (Role::Assistant, "part 1\npart 2"),
                 (Role::User, "alice: thanks"),
                 (Role::Assistant, "part 3"),
+                (Role::User, "alice: next"),
+            ]
+        );
+    }
+
+    #[test]
+    fn footers_under_earlier_answers_are_not_sent() {
+        let history = [
+            message(5, ALICE, "next"),
+            message(4, BOT, "-# Sources\n-# 1. [A](<https://a.example/>)"),
+            message(3, BOT, "more\n\n-# 🔧 1 tool call"),
+            message(
+                2,
+                BOT,
+                "answer\n\n-# Sources\n-# 1. [A](<https://a.example/>)",
+            ),
+            message(1, ALICE, "q"),
+        ];
+
+        assert_eq!(
+            texts(&build(&history, None)),
+            [
+                (Role::User, "alice: q"),
+                (Role::Assistant, "answer\nmore"),
                 (Role::User, "alice: next"),
             ]
         );

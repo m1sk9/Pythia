@@ -14,7 +14,10 @@ mod thread;
 
 use crate::attachments::ImagePolicy;
 use crate::config::{EnvConfig, LogFormat, PythiaConfig};
-use crate::llm::openrouter::{self, OpenRouterClient};
+use crate::llm::{
+    ModelCapabilities,
+    openrouter::{self, OpenRouterClient},
+};
 use crate::orchestrator::AppState;
 use std::{sync::Arc, time::Duration};
 use tracing_subscriber::EnvFilter;
@@ -47,18 +50,30 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     // The model list is off the hot path: an outage must not keep the bot down,
     // and a wrong model id still surfaces on the first chat request.
-    let images_enabled = config.attachments.images
-        && match openrouter::fetch_capabilities(&http, &config.llm.model).await {
-            Ok(capabilities) => capabilities.accepts_images,
-            Err(error) => {
-                tracing::warn!(
-                    error = format!("{error:#}"),
-                    "failed to look up model capabilities; disabling images"
-                );
-                false
+    let capabilities = openrouter::fetch_capabilities(&http, &config.llm.model)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                error = format!("{error:#}"),
+                "failed to look up model capabilities; disabling images and tools"
+            );
+            ModelCapabilities {
+                accepts_images: false,
+                accepts_tools: false,
             }
-        };
-    tracing::info!(model = %config.llm.model, images = images_enabled, "LLM client ready");
+        });
+    let images_enabled = config.attachments.images && capabilities.accepts_images;
+    let mut tools = config.tools.server_tools(&config.thread.timezone);
+    if !tools.is_empty() && !capabilities.accepts_tools {
+        tracing::warn!(model = %config.llm.model, "model does not support tools; disabling them");
+        tools.clear();
+    }
+    tracing::info!(
+        model = %config.llm.model,
+        images = images_enabled,
+        ?tools,
+        "LLM client ready"
+    );
     let llm = OpenRouterClient::new(
         http.clone(),
         envs.openrouter_api_key.clone(),
@@ -76,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
             recent_messages: config.attachments.recent_messages,
             max_image_bytes: config.attachments.max_image_bytes,
         },
+        tools,
         cache: DefaultInMemoryCache::builder()
             .resource_types(ResourceType::CHANNEL)
             .build(),

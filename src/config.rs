@@ -3,6 +3,7 @@
 //! Secrets come from environment variables ([`EnvConfig`]); everything else
 //! comes from the TOML file pointed to by `CONFIG_FILE_PATH` ([`PythiaConfig`]).
 
+use crate::llm::{ServerTool, WebFetchEngine, WebSearchEngine};
 use serde::Deserialize;
 use std::{path::PathBuf, str::FromStr, sync::OnceLock};
 
@@ -75,6 +76,7 @@ pub struct PythiaConfig {
     pub context: ContextConfig,
     pub response: ResponseConfig,
     pub attachments: AttachmentsConfig,
+    pub tools: ToolsConfig,
     pub thread: ThreadConfig,
     pub limits: LimitsConfig,
     pub log: LogConfig,
@@ -89,6 +91,7 @@ struct RawConfig {
     context: ContextConfig,
     response: ResponseConfig,
     attachments: AttachmentsConfig,
+    tools: ToolsConfig,
     thread: ThreadConfig,
     limits: LimitsConfig,
     log: LogConfig,
@@ -209,6 +212,43 @@ impl Default for AttachmentsConfig {
             recent_messages: 5,
             max_image_bytes: 5_242_880,
         }
+    }
+}
+
+/// OpenRouter server tools. All are off by default because searches and
+/// fetches are billed per request on top of tokens.
+#[derive(Deserialize, Debug, Default)]
+#[serde(default)]
+pub struct ToolsConfig {
+    pub web_search: bool,
+    /// Left to OpenRouter (`auto`) when unset.
+    pub web_search_engine: Option<WebSearchEngine>,
+    /// Engine-specific and passed through as written; left to OpenRouter when unset.
+    pub web_search_mode: Option<String>,
+    pub web_fetch: bool,
+    /// Left to OpenRouter (`auto`) when unset.
+    pub web_fetch_engine: Option<WebFetchEngine>,
+    pub datetime: bool,
+}
+
+impl ToolsConfig {
+    /// The enabled tools; `datetime` reports the time in `timezone`.
+    pub fn server_tools(&self, timezone: &str) -> Vec<ServerTool> {
+        [
+            self.web_search.then(|| ServerTool::WebSearch {
+                engine: self.web_search_engine,
+                mode: self.web_search_mode.clone(),
+            }),
+            self.web_fetch.then_some(ServerTool::WebFetch {
+                engine: self.web_fetch_engine,
+            }),
+            self.datetime.then(|| ServerTool::Datetime {
+                timezone: timezone.to_string(),
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 
@@ -359,6 +399,7 @@ impl RawConfig {
             context: self.context,
             response: self.response,
             attachments: self.attachments,
+            tools: self.tools,
             thread: self.thread,
             limits: self.limits,
             log: self.log,
@@ -429,6 +470,12 @@ mod tests {
         assert_eq!(config.attachments.max_images, 4);
         assert_eq!(config.attachments.recent_messages, 5);
         assert_eq!(config.attachments.max_image_bytes, 5242880);
+        assert!(!config.tools.web_search);
+        assert_eq!(config.tools.web_search_engine, None);
+        assert_eq!(config.tools.web_search_mode, None);
+        assert_eq!(config.tools.web_fetch_engine, None);
+        assert!(!config.tools.web_fetch);
+        assert!(!config.tools.datetime);
         assert_eq!(config.thread.timezone, "Asia/Tokyo");
         assert_eq!(config.limits.max_concurrent, 4);
         assert_eq!(config.log.level, "pythia=info");
@@ -453,6 +500,12 @@ mod tests {
         assert_eq!(config.attachments.max_images, 4);
         assert_eq!(config.attachments.recent_messages, 5);
         assert_eq!(config.attachments.max_image_bytes, 5242880);
+        assert!(!config.tools.web_search);
+        assert_eq!(config.tools.web_search_engine, None);
+        assert_eq!(config.tools.web_search_mode, None);
+        assert_eq!(config.tools.web_fetch_engine, None);
+        assert!(!config.tools.web_fetch);
+        assert!(!config.tools.datetime);
         assert_eq!(config.thread.timezone, "Asia/Tokyo");
         assert_eq!(config.limits.max_concurrent, 4);
         assert_eq!(config.log.level, "pythia=info");
@@ -527,6 +580,51 @@ mod tests {
         let toml = "[llm]\nmodel = \"x\"\ntimeout_secs = 0";
         let msg = validation_message(toml.parse());
         assert!(msg.contains("llm.timeout_secs"), "{msg}");
+    }
+
+    #[test]
+    fn enabled_tools_are_listed_with_datetime_in_the_given_timezone() {
+        let toml = r#"
+            [llm]
+            model = "x"
+            [tools]
+            web_search = true
+            web_search_engine = "parallel"
+            web_search_mode = "fast"
+            web_fetch = true
+            web_fetch_engine = "openrouter"
+            datetime = true
+        "#;
+        let config: PythiaConfig = toml.parse().unwrap();
+
+        assert_eq!(
+            config.tools.server_tools("Asia/Tokyo"),
+            [
+                ServerTool::WebSearch {
+                    engine: Some(WebSearchEngine::Parallel),
+                    mode: Some("fast".to_string()),
+                },
+                ServerTool::WebFetch {
+                    engine: Some(WebFetchEngine::OpenRouter)
+                },
+                ServerTool::Datetime {
+                    timezone: "Asia/Tokyo".to_string()
+                },
+            ]
+        );
+        assert!(ToolsConfig::default().server_tools("UTC").is_empty());
+    }
+
+    #[test]
+    fn unknown_web_search_or_fetch_engine_fails_to_parse() {
+        for key in ["web_search_engine", "web_fetch_engine"] {
+            let toml = format!("[llm]\nmodel = \"x\"\n[tools]\n{key} = \"google\"");
+            let result: Result<PythiaConfig, _> = toml.parse();
+            assert!(
+                matches!(result, Err(PythiaConfigError::Parse(_))),
+                "{key}: {result:?}"
+            );
+        }
     }
 
     #[test]

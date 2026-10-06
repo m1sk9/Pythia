@@ -41,7 +41,7 @@ Answers longer than Discord's 2000-character limit are split into several messag
 Planned for v3.x:
 
 - [ ] Server-wide knowledge through a server overview and read-only tools ([#309](https://github.com/m1sk9/Pythia/issues/309))
-- [ ] Web search and web fetch through OpenRouter server tools ([#317](https://github.com/m1sk9/Pythia/issues/317))
+- [x] Web search and web fetch through OpenRouter server tools ([#317](https://github.com/m1sk9/Pythia/issues/317))
 - [ ] Write tools with confirmation buttons and audit log reasons ([#310](https://github.com/m1sk9/Pythia/issues/310))
 - [ ] Code execution in a sandbox and external tools ([#311](https://github.com/m1sk9/Pythia/issues/311))
 - [ ] OpenAI-compatible and Anthropic backends ([#312](https://github.com/m1sk9/Pythia/issues/312))
