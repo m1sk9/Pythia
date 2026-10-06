@@ -5,7 +5,7 @@
 
 use super::{
     ChatRequest, ChatResponse, Citation, Content, Finish, LlmError, ModelCapabilities, Part, Role,
-    ServerTool, Usage,
+    ServerTool, Usage, WebSearchEngine,
 };
 use anyhow::Context as _;
 use bytes::Bytes;
@@ -232,8 +232,10 @@ struct WireTool<'a> {
 }
 
 #[derive(Serialize)]
-struct WireToolParameters<'a> {
-    timezone: &'a str,
+#[serde(untagged)]
+enum WireToolParameters<'a> {
+    WebSearch { engine: &'static str },
+    Datetime { timezone: &'a str },
 }
 
 #[derive(Serialize)]
@@ -292,9 +294,11 @@ fn wire_content(content: &Content) -> WireContent<'_> {
 
 fn wire_tool(tool: &ServerTool) -> WireTool<'_> {
     match tool {
-        ServerTool::WebSearch => WireTool {
+        ServerTool::WebSearch { engine } => WireTool {
             kind: "openrouter:web_search",
-            parameters: None,
+            parameters: engine.map(|engine| WireToolParameters::WebSearch {
+                engine: engine_name(engine),
+            }),
         },
         ServerTool::WebFetch => WireTool {
             kind: "openrouter:web_fetch",
@@ -302,8 +306,19 @@ fn wire_tool(tool: &ServerTool) -> WireTool<'_> {
         },
         ServerTool::Datetime { timezone } => WireTool {
             kind: "openrouter:datetime",
-            parameters: Some(WireToolParameters { timezone }),
+            parameters: Some(WireToolParameters::Datetime { timezone }),
         },
+    }
+}
+
+fn engine_name(engine: WebSearchEngine) -> &'static str {
+    match engine {
+        WebSearchEngine::Auto => "auto",
+        WebSearchEngine::Native => "native",
+        WebSearchEngine::Exa => "exa",
+        WebSearchEngine::Firecrawl => "firecrawl",
+        WebSearchEngine::Parallel => "parallel",
+        WebSearchEngine::Perplexity => "perplexity",
     }
 }
 
@@ -708,7 +723,10 @@ mod tests {
             messages: vec![user(Content::Text("hello".to_string()))],
             max_output_tokens: 256,
             tools: vec![
-                ServerTool::WebSearch,
+                ServerTool::WebSearch { engine: None },
+                ServerTool::WebSearch {
+                    engine: Some(WebSearchEngine::Parallel),
+                },
                 ServerTool::WebFetch,
                 ServerTool::Datetime {
                     timezone: "Asia/Tokyo".to_string(),
@@ -720,6 +738,7 @@ mod tests {
             body_json(&request)["tools"],
             json!([
                 {"type": "openrouter:web_search"},
+                {"type": "openrouter:web_search", "parameters": {"engine": "parallel"}},
                 {"type": "openrouter:web_fetch"},
                 {"type": "openrouter:datetime", "parameters": {"timezone": "Asia/Tokyo"}},
             ])
@@ -1259,7 +1278,7 @@ mod tests {
             ))],
             max_output_tokens: 1024,
             tools: vec![
-                ServerTool::WebSearch,
+                ServerTool::WebSearch { engine: None },
                 ServerTool::Datetime {
                     timezone: "Asia/Tokyo".to_string(),
                 },

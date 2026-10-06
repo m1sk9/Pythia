@@ -40,9 +40,26 @@ pub enum Part {
 /// A tool that the provider runs on its own while the model answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerTool {
-    WebSearch,
+    /// `None` leaves the engine to the provider.
+    WebSearch {
+        engine: Option<WebSearchEngine>,
+    },
     WebFetch,
-    Datetime { timezone: String },
+    Datetime {
+        timezone: String,
+    },
+}
+
+/// Backend that runs web searches.
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WebSearchEngine {
+    Auto,
+    Native,
+    Exa,
+    Firecrawl,
+    Parallel,
+    Perplexity,
 }
 
 /// A chat request. The model and system prompt are supplied by the client.

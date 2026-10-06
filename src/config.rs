@@ -3,7 +3,7 @@
 //! Secrets come from environment variables ([`EnvConfig`]); everything else
 //! comes from the TOML file pointed to by `CONFIG_FILE_PATH` ([`PythiaConfig`]).
 
-use crate::llm::ServerTool;
+use crate::llm::{ServerTool, WebSearchEngine};
 use serde::Deserialize;
 use std::{path::PathBuf, str::FromStr, sync::OnceLock};
 
@@ -221,6 +221,8 @@ impl Default for AttachmentsConfig {
 #[serde(default)]
 pub struct ToolsConfig {
     pub web_search: bool,
+    /// Left to OpenRouter (`auto`) when unset.
+    pub web_search_engine: Option<WebSearchEngine>,
     pub web_fetch: bool,
     pub datetime: bool,
 }
@@ -229,7 +231,9 @@ impl ToolsConfig {
     /// The enabled tools; `datetime` reports the time in `timezone`.
     pub fn server_tools(&self, timezone: &str) -> Vec<ServerTool> {
         [
-            self.web_search.then_some(ServerTool::WebSearch),
+            self.web_search.then_some(ServerTool::WebSearch {
+                engine: self.web_search_engine,
+            }),
             self.web_fetch.then_some(ServerTool::WebFetch),
             self.datetime.then(|| ServerTool::Datetime {
                 timezone: timezone.to_string(),
@@ -460,6 +464,7 @@ mod tests {
         assert_eq!(config.attachments.recent_messages, 5);
         assert_eq!(config.attachments.max_image_bytes, 5242880);
         assert!(!config.tools.web_search);
+        assert_eq!(config.tools.web_search_engine, None);
         assert!(!config.tools.web_fetch);
         assert!(!config.tools.datetime);
         assert_eq!(config.thread.timezone, "Asia/Tokyo");
@@ -487,6 +492,7 @@ mod tests {
         assert_eq!(config.attachments.recent_messages, 5);
         assert_eq!(config.attachments.max_image_bytes, 5242880);
         assert!(!config.tools.web_search);
+        assert_eq!(config.tools.web_search_engine, None);
         assert!(!config.tools.web_fetch);
         assert!(!config.tools.datetime);
         assert_eq!(config.thread.timezone, "Asia/Tokyo");
@@ -567,19 +573,31 @@ mod tests {
 
     #[test]
     fn enabled_tools_are_listed_with_datetime_in_the_given_timezone() {
-        let toml = "[llm]\nmodel = \"x\"\n[tools]\nweb_search = true\ndatetime = true";
+        let toml = "[llm]\nmodel = \"x\"\n[tools]\nweb_search = true\nweb_search_engine = \"parallel\"\ndatetime = true";
         let config: PythiaConfig = toml.parse().unwrap();
 
         assert_eq!(
             config.tools.server_tools("Asia/Tokyo"),
             [
-                ServerTool::WebSearch,
+                ServerTool::WebSearch {
+                    engine: Some(WebSearchEngine::Parallel)
+                },
                 ServerTool::Datetime {
                     timezone: "Asia/Tokyo".to_string()
                 },
             ]
         );
         assert!(ToolsConfig::default().server_tools("UTC").is_empty());
+    }
+
+    #[test]
+    fn unknown_web_search_engine_fails_to_parse() {
+        let toml = "[llm]\nmodel = \"x\"\n[tools]\nweb_search_engine = \"google\"";
+        let result: Result<PythiaConfig, _> = toml.parse();
+        assert!(
+            matches!(result, Err(PythiaConfigError::Parse(_))),
+            "{result:?}"
+        );
     }
 
     #[test]
