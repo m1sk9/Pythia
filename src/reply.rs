@@ -514,6 +514,16 @@ mod tests {
     }
 
     #[test]
+    fn citations_without_an_http_url_leave_no_source_list() {
+        let response = cited(
+            "answer",
+            &[("not a url", Some("x")), ("ftp://a.example/", None)],
+        );
+
+        assert_eq!(answer_parts(&response, 5), ["answer"]);
+    }
+
+    #[test]
     fn source_list_keeps_the_first_five_http_links() {
         let urls: Vec<String> = (0..7).map(|i| format!("https://{i}.example/")).collect();
         let mut citations: Vec<(&str, Option<&str>)> = vec![("javascript:alert(1)", None)];

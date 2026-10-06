@@ -782,6 +782,72 @@ mod tests {
     }
 
     #[test]
+    fn server_tool_engines_are_sent_by_their_config_names() {
+        let search = [
+            "auto",
+            "native",
+            "exa",
+            "firecrawl",
+            "parallel",
+            "perplexity",
+        ];
+        let fetch = [
+            "auto",
+            "native",
+            "exa",
+            "openrouter",
+            "firecrawl",
+            "parallel",
+        ];
+        let tools = search
+            .iter()
+            .map(|name| ServerTool::WebSearch {
+                engine: Some(serde_json::from_value(json!(name)).unwrap()),
+                mode: None,
+            })
+            .chain(fetch.iter().map(|name| ServerTool::WebFetch {
+                engine: Some(serde_json::from_value(json!(name)).unwrap()),
+            }))
+            .collect();
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("hello".to_string()))],
+            max_output_tokens: 256,
+            tools,
+        };
+
+        let sent: Vec<Value> = body_json(&request)["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["parameters"]["engine"].clone())
+            .collect();
+        let expected: Vec<Value> = search.iter().chain(&fetch).map(|n| json!(n)).collect();
+        assert_eq!(sent, expected);
+    }
+
+    #[test]
+    fn annotations_without_the_url_citation_type_or_a_url_are_ignored() {
+        let body = completion(json!({
+            "finish_reason": "stop",
+            "message": {
+                "content": "answer",
+                "annotations": [
+                    {"url_citation": {"url": "https://untyped.example/"}},
+                    {"type": "url_citation", "url_citation": {"url": "", "title": "empty"}},
+                    {"type": "url_citation"},
+                ],
+            },
+        }));
+
+        assert!(
+            parse_completion(&body, MODEL, 0)
+                .unwrap()
+                .citations
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn url_citations_become_citations_without_duplicate_urls() {
         let body = completion(json!({
             "finish_reason": "stop",
@@ -1279,6 +1345,7 @@ mod tests {
     /// Manual check against the live API: `cargo test live_ping -- --ignored --nocapture`.
     #[tokio::test]
     #[ignore = "calls the live OpenRouter API"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn live_ping() {
         let (http, api_key, model) = live_setup();
 
@@ -1297,6 +1364,7 @@ mod tests {
     /// Prints the citations and the usage, including cost and search count.
     #[tokio::test]
     #[ignore = "calls the live OpenRouter API and is billed per search"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn live_web_search() {
         let (http, api_key, model) = live_setup();
 
@@ -1328,6 +1396,7 @@ mod tests {
 
     /// Reads `OPENROUTER_API_KEY` from the environment or `.env`; the model is
     /// `OPENROUTER_MODEL` if set, otherwise `llm.model` from `CONFIG_FILE_PATH`.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn live_setup() -> (reqwest::Client, String, String) {
         dotenvy::dotenv().ok();
         let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY");
