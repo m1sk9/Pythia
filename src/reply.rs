@@ -2,7 +2,7 @@
 //!
 //! Splitting and embed building are pure; only `post_*` touch the network.
 
-use crate::llm::{ChatResponse, Finish, LlmError};
+use crate::llm::{ChatResponse, Citation, Finish, LlmError};
 use twilight_model::{
     channel::message::{AllowedMentions, Embed},
     id::{
@@ -16,6 +16,11 @@ use twilight_util::builder::embed::{EmbedBuilder, EmbedFieldBuilder};
 pub const MESSAGE_LIMIT: usize = 2000;
 const OUTPUT_TRUNCATED_NOTE: &str = "\n\n(output truncated: max_output_tokens reached)";
 const RESPONSE_TRUNCATED_NOTE: &str = "\n\n(response truncated: too long for Discord)";
+/// First line of the source list under an answer; also how the context
+/// recognises the list in earlier answers.
+pub const SOURCES_HEADING: &str = "-# Sources";
+const MAX_SOURCES: usize = 5;
+const MAX_SOURCE_TITLE_CHARS: usize = 100;
 const FENCE: &str = "```";
 const CLOSE_FENCE: &str = "\n```";
 /// Longer info strings are not repeated when a fence is reopened, so that the
@@ -92,11 +97,16 @@ fn open_fence_info(text: &str) -> Option<&str> {
 }
 
 /// The messages to post for an answer: the truncation note when the model hit
-/// `max_output_tokens`, split into at most `max_parts` messages.
+/// `max_output_tokens` and the cited sources, split into at most `max_parts`
+/// messages.
 pub fn answer_parts(response: &ChatResponse, max_parts: usize) -> Vec<String> {
     let mut text = response.text.clone();
     if response.finish == Finish::Length {
         text.push_str(OUTPUT_TRUNCATED_NOTE);
+    }
+    if let Some(sources) = sources_list(&response.citations) {
+        text.push_str("\n\n");
+        text.push_str(&sources);
     }
 
     let mut parts = split_message(&text, MESSAGE_LIMIT);
@@ -110,6 +120,45 @@ pub fn answer_parts(response: &ChatResponse, max_parts: usize) -> Vec<String> {
         }
     }
     parts
+}
+
+/// A small-text list of the first [`MAX_SOURCES`] http(s) citations, linked
+/// in angle brackets so that Discord does not embed every page.
+fn sources_list(citations: &[Citation]) -> Option<String> {
+    let lines: Vec<String> = citations
+        .iter()
+        .filter_map(|citation| {
+            let url = reqwest::Url::parse(&citation.url).ok()?;
+            matches!(url.scheme(), "http" | "https").then_some((citation, url))
+        })
+        .take(MAX_SOURCES)
+        .enumerate()
+        .map(|(i, (citation, url))| {
+            let label = match &citation.title {
+                Some(title) => escape_link_text(title),
+                None => url.host_str().unwrap_or(url.as_str()).to_string(),
+            };
+            format!("-# {}. [{label}](<{url}>)", i + 1)
+        })
+        .collect();
+    (!lines.is_empty()).then(|| format!("{SOURCES_HEADING}\n{}", lines.join("\n")))
+}
+
+/// Keeps a title on one line and inside the brackets of a markdown link.
+fn escape_link_text(title: &str) -> String {
+    let one_line = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = one_line.chars();
+    let mut escaped = String::new();
+    for c in chars.by_ref().take(MAX_SOURCE_TITLE_CHARS) {
+        if matches!(c, '[' | ']' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    if chars.next().is_some() {
+        escaped.push('…');
+    }
+    escaped
 }
 
 /// The embed shown when a turn fails. Holds nothing that is not already
@@ -251,6 +300,19 @@ mod tests {
         }
     }
 
+    fn cited(text: &str, citations: &[(&str, Option<&str>)]) -> ChatResponse {
+        ChatResponse {
+            citations: citations
+                .iter()
+                .map(|(url, title)| Citation {
+                    url: url.to_string(),
+                    title: title.map(str::to_string),
+                })
+                .collect(),
+            ..response(text, Finish::Stop)
+        }
+    }
+
     fn chars(s: &str) -> usize {
         s.chars().count()
     }
@@ -355,6 +417,96 @@ mod tests {
             parts,
             ["partial\n\n(output truncated: max_output_tokens reached)"]
         );
+    }
+
+    #[test]
+    fn answer_without_citations_has_no_source_list() {
+        assert_eq!(answer_parts(&cited("answer", &[]), 5), ["answer"]);
+    }
+
+    #[test]
+    fn citations_are_listed_as_small_unembedded_links_under_the_answer() {
+        let response = cited(
+            "answer",
+            &[
+                ("https://a.example/page", Some("Page A")),
+                ("https://b.example/x?q=1", None),
+            ],
+        );
+
+        assert_eq!(
+            answer_parts(&response, 5),
+            ["answer\n\n-# Sources\n\
+              -# 1. [Page A](<https://a.example/page>)\n\
+              -# 2. [b.example](<https://b.example/x?q=1>)"]
+        );
+    }
+
+    #[test]
+    fn source_list_follows_the_output_truncated_note() {
+        let response = ChatResponse {
+            finish: Finish::Length,
+            ..cited("partial", &[("https://a.example/", Some("A"))])
+        };
+
+        assert_eq!(
+            answer_parts(&response, 5),
+            [
+                "partial\n\n(output truncated: max_output_tokens reached)\n\n\
+              -# Sources\n-# 1. [A](<https://a.example/>)"
+            ]
+        );
+    }
+
+    #[test]
+    fn source_list_keeps_the_first_five_http_links() {
+        let urls: Vec<String> = (0..7).map(|i| format!("https://{i}.example/")).collect();
+        let mut citations: Vec<(&str, Option<&str>)> = vec![("javascript:alert(1)", None)];
+        citations.extend(urls.iter().map(|url| (url.as_str(), None)));
+
+        let parts = answer_parts(&cited("answer", &citations), 5);
+
+        let lines: Vec<&str> = parts[0].lines().filter(|l| l.starts_with("-# ")).collect();
+        assert_eq!(lines.len(), 6, "{parts:?}");
+        assert_eq!(lines[1], "-# 1. [0.example](<https://0.example/>)");
+        assert_eq!(lines[5], "-# 5. [4.example](<https://4.example/>)");
+    }
+
+    #[test]
+    fn source_titles_stay_on_one_line_inside_the_link_text() {
+        let long = "t".repeat(150);
+        let response = cited(
+            "answer",
+            &[
+                ("https://a.example/", Some("[Draft]\nnotes \\ more")),
+                ("https://b.example/", Some(&long)),
+            ],
+        );
+
+        let parts = answer_parts(&response, 5);
+
+        assert!(
+            parts[0].contains("-# 1. [\\[Draft\\] notes \\\\ more](<https://a.example/>)"),
+            "{parts:?}"
+        );
+        assert!(
+            parts[0].contains(&format!(
+                "-# 2. [{}…](<https://b.example/>)",
+                "t".repeat(100)
+            )),
+            "{parts:?}"
+        );
+    }
+
+    #[test]
+    fn source_list_counts_against_max_parts() {
+        let text = "a".repeat(1990);
+        let response = cited(&text, &[("https://a.example/", Some("A"))]);
+
+        assert_eq!(answer_parts(&response, 2).len(), 2);
+        let cut = answer_parts(&response, 1);
+        assert_eq!(cut.len(), 1);
+        assert!(!cut[0].contains(SOURCES_HEADING), "{cut:?}");
     }
 
     #[test]
