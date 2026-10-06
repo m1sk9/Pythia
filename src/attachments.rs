@@ -387,6 +387,7 @@ mod tests {
                 ]),
             }],
             max_output_tokens: 256,
+            tools: Vec::new(),
         };
         println!("{:#?}", client.chat(&request).await.unwrap());
     }

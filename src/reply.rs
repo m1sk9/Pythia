@@ -247,6 +247,7 @@ mod tests {
             model: "test/model".to_string(),
             request_id: None,
             usage: None,
+            citations: Vec::new(),
         }
     }
 

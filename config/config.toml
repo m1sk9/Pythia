@@ -39,6 +39,16 @@ recent_messages = 5
 ## Larger images are left out with a note.
 max_image_bytes = 5242880
 
+[tools]
+## OpenRouter server tools, run by OpenRouter while the model answers.
+## Searches and fetches are billed per request on top of tokens.
+## Disabled automatically when the model does not support tool calling.
+web_search = false
+## Reads URLs, e.g. ones pasted in the thread.
+web_fetch = false
+## Current date and time in thread.timezone. No extra cost.
+datetime = false
+
 [thread]
 ## Used in thread names: "{display name} · {YYYY-MM-DD HH:mm}"
 timezone = "Asia/Tokyo"

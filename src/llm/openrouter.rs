@@ -4,7 +4,8 @@
 //! retry policy are pure functions so they can be tested without a server.
 
 use super::{
-    ChatRequest, ChatResponse, Content, Finish, LlmError, ModelCapabilities, Part, Role, Usage,
+    ChatRequest, ChatResponse, Citation, Content, Finish, LlmError, ModelCapabilities, Part, Role,
+    ServerTool, Usage,
 };
 use anyhow::Context as _;
 use bytes::Bytes;
@@ -13,7 +14,7 @@ use reqwest::{
     header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, RETRY_AFTER},
 };
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 const CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
@@ -218,6 +219,21 @@ struct WireRequest<'a> {
     messages: Vec<WireMessage<'a>>,
     max_tokens: u32,
     stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<WireTool<'a>>,
+}
+
+#[derive(Serialize)]
+struct WireTool<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<WireToolParameters<'a>>,
+}
+
+#[derive(Serialize)]
+struct WireToolParameters<'a> {
+    timezone: &'a str,
 }
 
 #[derive(Serialize)]
@@ -274,6 +290,23 @@ fn wire_content(content: &Content) -> WireContent<'_> {
     }
 }
 
+fn wire_tool(tool: &ServerTool) -> WireTool<'_> {
+    match tool {
+        ServerTool::WebSearch => WireTool {
+            kind: "openrouter:web_search",
+            parameters: None,
+        },
+        ServerTool::WebFetch => WireTool {
+            kind: "openrouter:web_fetch",
+            parameters: None,
+        },
+        ServerTool::Datetime { timezone } => WireTool {
+            kind: "openrouter:datetime",
+            parameters: Some(WireToolParameters { timezone }),
+        },
+    }
+}
+
 /// Serialises the request body: the system prompt first, then the request messages.
 fn request_body(model: &str, system_prompt: &str, request: &ChatRequest) -> Vec<u8> {
     let system = WireMessage {
@@ -291,6 +324,7 @@ fn request_body(model: &str, system_prompt: &str, request: &ChatRequest) -> Vec<
         messages,
         max_tokens: request.max_output_tokens,
         stream: false,
+        tools: request.tools.iter().map(wire_tool).collect(),
     };
     serde_json::to_vec(&body).expect("request body contains only strings and integers")
 }
@@ -316,6 +350,22 @@ struct WireChoice {
 #[derive(Deserialize)]
 struct WireResponseMessage {
     content: Option<String>,
+    annotations: Option<Vec<WireAnnotation>>,
+}
+
+// Every field is optional so that an annotation of another shape cannot turn
+// an answer into a decode failure.
+#[derive(Deserialize)]
+struct WireAnnotation {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    url_citation: Option<WireUrlCitation>,
+}
+
+#[derive(Deserialize)]
+struct WireUrlCitation {
+    url: Option<String>,
+    title: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -324,6 +374,12 @@ struct WireUsage {
     completion_tokens: u64,
     total_tokens: u64,
     cost: Option<f64>,
+    server_tool_use: Option<WireServerToolUse>,
+}
+
+#[derive(Deserialize)]
+struct WireServerToolUse {
+    web_search_requests: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -401,7 +457,11 @@ fn parse_completion(body: &[u8], model: &str, retries: u32) -> Result<ChatRespon
         Some("length") => Finish::Length,
         Some(other) => Finish::Other(other.to_string()),
     };
-    let text = match choice.message.and_then(|message| message.content) {
+    let (content, annotations) = match choice.message {
+        Some(message) => (message.content, message.annotations.unwrap_or_default()),
+        None => (None, Vec::new()),
+    };
+    let text = match content {
         Some(text) if !text.trim().is_empty() => text,
         _ if finish == Finish::Length => {
             return Err(LlmError::OutputTokenLimit {
@@ -423,8 +483,30 @@ fn parse_completion(body: &[u8], model: &str, retries: u32) -> Result<ChatRespon
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
             cost: usage.cost,
+            web_search_requests: usage
+                .server_tool_use
+                .and_then(|tools| tools.web_search_requests),
         }),
+        citations: citations(annotations),
     })
+}
+
+/// The `url_citation` annotations as citations, keeping the first of each URL.
+fn citations(annotations: Vec<WireAnnotation>) -> Vec<Citation> {
+    let mut seen = HashSet::new();
+    annotations
+        .into_iter()
+        .filter(|annotation| annotation.kind.as_deref() == Some("url_citation"))
+        .filter_map(|annotation| {
+            let citation = annotation.url_citation?;
+            let url = citation.url.filter(|url| !url.is_empty())?;
+            Some(Citation {
+                url,
+                title: citation.title.filter(|title| !title.trim().is_empty()),
+            })
+        })
+        .filter(|citation| seen.insert(citation.url.clone()))
+        .collect()
 }
 
 /// Parses an OpenRouter error body (`{"error": {"code", "message", "metadata"}}`).
@@ -473,6 +555,8 @@ struct WireModels {
 struct WireModel {
     id: String,
     architecture: Option<WireArchitecture>,
+    #[serde(default)]
+    supported_parameters: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -481,7 +565,8 @@ struct WireArchitecture {
     input_modalities: Vec<String>,
 }
 
-/// Finds `model` in a `/models` body and reads its input modalities.
+/// Finds `model` in a `/models` body and reads its input modalities and
+/// whether it takes `tools`.
 ///
 /// Routing variants (`:nitro` etc.) are accepted on any model id but are not
 /// listed, so they are looked up by their base id.
@@ -500,7 +585,11 @@ fn parse_capabilities(body: &[u8], model: &str) -> anyhow::Result<ModelCapabilit
     let accepts_images = entry
         .architecture
         .is_some_and(|arch| arch.input_modalities.iter().any(|m| m == "image"));
-    Ok(ModelCapabilities { accepts_images })
+    let accepts_tools = entry.supported_parameters.iter().any(|p| p == "tools");
+    Ok(ModelCapabilities {
+        accepts_images,
+        accepts_tools,
+    })
 }
 
 #[cfg(test)]
@@ -549,6 +638,7 @@ mod tests {
                 },
             ],
             max_output_tokens: 256,
+            tools: Vec::new(),
         };
 
         assert_eq!(
@@ -581,6 +671,7 @@ mod tests {
                 },
             ]))],
             max_output_tokens: 256,
+            tools: Vec::new(),
         };
 
         assert_eq!(
@@ -591,6 +682,108 @@ mod tests {
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBBB"}},
             ])
         );
+    }
+
+    #[test]
+    fn request_body_omits_tools_when_none_are_enabled() {
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("hello".to_string()))],
+            max_output_tokens: 256,
+            tools: Vec::new(),
+        };
+        assert_eq!(body_json(&request).get("tools"), None);
+    }
+
+    #[test]
+    fn request_body_declares_enabled_server_tools() {
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("hello".to_string()))],
+            max_output_tokens: 256,
+            tools: vec![
+                ServerTool::WebSearch,
+                ServerTool::WebFetch,
+                ServerTool::Datetime {
+                    timezone: "Asia/Tokyo".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            body_json(&request)["tools"],
+            json!([
+                {"type": "openrouter:web_search"},
+                {"type": "openrouter:web_fetch"},
+                {"type": "openrouter:datetime", "parameters": {"timezone": "Asia/Tokyo"}},
+            ])
+        );
+    }
+
+    #[test]
+    fn url_citations_become_citations_without_duplicate_urls() {
+        let body = completion(json!({
+            "finish_reason": "stop",
+            "message": {
+                "content": "answer",
+                "annotations": [
+                    {"type": "url_citation", "url_citation": {"url": "https://a.example/", "title": "A", "content": "excerpt", "start_index": 0, "end_index": 6}},
+                    {"type": "file", "file": {"name": "x"}},
+                    {"type": "url_citation", "url_citation": {"url": "https://b.example/", "title": " "}},
+                    {"type": "url_citation", "url_citation": {"url": "https://a.example/", "title": "A again"}},
+                    {"type": "url_citation", "url_citation": {"title": "no url"}},
+                ],
+            },
+        }));
+
+        let response = parse_completion(&body, MODEL, 0).unwrap();
+
+        assert_eq!(
+            response.citations,
+            [
+                Citation {
+                    url: "https://a.example/".to_string(),
+                    title: Some("A".to_string()),
+                },
+                Citation {
+                    url: "https://b.example/".to_string(),
+                    title: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_or_null_annotations_yield_no_citations() {
+        for message in [
+            json!({"content": "answer"}),
+            json!({"content": "answer", "annotations": null}),
+        ] {
+            let body = completion(json!({"finish_reason": "stop", "message": message}));
+            assert!(
+                parse_completion(&body, MODEL, 0)
+                    .unwrap()
+                    .citations
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn server_tool_use_reports_web_search_requests() {
+        let body = serde_json::to_vec(&json!({
+            "id": "gen-123",
+            "choices": [{"finish_reason": "stop", "message": {"content": "answer"}}],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 80,
+                "total_tokens": 1280,
+                "cost": 0.012,
+                "server_tool_use": {"web_search_requests": 2},
+            },
+        }))
+        .unwrap();
+
+        let usage = parse_completion(&body, MODEL, 0).unwrap().usage.unwrap();
+        assert_eq!(usage.web_search_requests, Some(2));
     }
 
     #[test]
@@ -632,7 +825,9 @@ mod tests {
                     completion_tokens: 2,
                     total_tokens: 14,
                     cost: Some(0.0000027),
+                    web_search_requests: None,
                 }),
+                citations: Vec::new(),
             }
         );
     }
@@ -971,6 +1166,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_support_follows_the_models_supported_parameters() {
+        let body = br#"{"data": [
+            {"id": "tool/model", "supported_parameters": ["max_tokens", "tools", "tool_choice"]},
+            {"id": "plain/model", "supported_parameters": ["max_tokens"]},
+            {"id": "unknown/model"}
+        ]}"#;
+
+        assert!(
+            parse_capabilities(body, "tool/model")
+                .unwrap()
+                .accepts_tools
+        );
+        assert!(
+            !parse_capabilities(body, "plain/model")
+                .unwrap()
+                .accepts_tools
+        );
+        assert!(
+            !parse_capabilities(body, "unknown/model")
+                .unwrap()
+                .accepts_tools
+        );
+    }
+
+    #[test]
     fn routing_variant_uses_the_capabilities_of_its_base_model() {
         let body = br#"{"data": [
             {"id": "vision/model", "architecture": {"input_modalities": ["text", "image"]}},
@@ -990,11 +1210,55 @@ mod tests {
     }
 
     /// Manual check against the live API: `cargo test live_ping -- --ignored --nocapture`.
-    /// Reads `OPENROUTER_API_KEY` from the environment or `.env`; the model is
-    /// `OPENROUTER_MODEL` if set, otherwise `llm.model` from `CONFIG_FILE_PATH`.
     #[tokio::test]
     #[ignore = "calls the live OpenRouter API"]
     async fn live_ping() {
+        let (http, api_key, model) = live_setup();
+
+        println!("{:?}", fetch_capabilities(&http, &model).await);
+        let client =
+            OpenRouterClient::new(http, api_key, model, "Reply with one word.".to_string(), 2);
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("ping".to_string()))],
+            max_output_tokens: 32,
+            tools: Vec::new(),
+        };
+        println!("{:#?}", client.chat(&request).await.unwrap());
+    }
+
+    /// Manual check of server tools: `cargo test live_web_search -- --ignored --nocapture`.
+    /// Prints the citations and the usage, including cost and search count.
+    #[tokio::test]
+    #[ignore = "calls the live OpenRouter API and is billed per search"]
+    async fn live_web_search() {
+        let (http, api_key, model) = live_setup();
+
+        println!("{:?}", fetch_capabilities(&http, &model).await);
+        let client = OpenRouterClient::new(
+            http,
+            api_key,
+            model,
+            "Answer briefly and cite your sources.".to_string(),
+            2,
+        );
+        let request = ChatRequest {
+            messages: vec![user(Content::Text(
+                "What is today's date, and what is the latest stable Rust release?".to_string(),
+            ))],
+            max_output_tokens: 1024,
+            tools: vec![
+                ServerTool::WebSearch,
+                ServerTool::Datetime {
+                    timezone: "Asia/Tokyo".to_string(),
+                },
+            ],
+        };
+        println!("{:#?}", client.chat(&request).await.unwrap());
+    }
+
+    /// Reads `OPENROUTER_API_KEY` from the environment or `.env`; the model is
+    /// `OPENROUTER_MODEL` if set, otherwise `llm.model` from `CONFIG_FILE_PATH`.
+    fn live_setup() -> (reqwest::Client, String, String) {
         dotenvy::dotenv().ok();
         let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY");
         let model = std::env::var("OPENROUTER_MODEL").unwrap_or_else(|_| {
@@ -1008,14 +1272,6 @@ mod tests {
             .timeout(Duration::from_secs(60))
             .build()
             .unwrap();
-
-        println!("{:?}", fetch_capabilities(&http, &model).await);
-        let client =
-            OpenRouterClient::new(http, api_key, model, "Reply with one word.".to_string(), 2);
-        let request = ChatRequest {
-            messages: vec![user(Content::Text("ping".to_string()))],
-            max_output_tokens: 32,
-        };
-        println!("{:#?}", client.chat(&request).await.unwrap());
+        (http, api_key, model)
     }
 }
