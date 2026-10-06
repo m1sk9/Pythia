@@ -48,8 +48,13 @@ web_search = false
 ## "firecrawl" (your Firecrawl credits), "parallel", or "perplexity".
 ## Prices differ per engine; see OpenRouter's web search docs.
 # web_search_engine = "auto"
+## Engine-specific, passed through as written. Parallel defaults to "basic"
+## ($0.005); "fast" or "turbo" cost $0.001 per search.
+# web_search_mode = "fast"
 ## Reads URLs, e.g. ones pasted in the thread.
 web_fetch = false
+## "auto" (default), "native", "exa", "openrouter" (free), "firecrawl", or "parallel".
+# web_fetch_engine = "openrouter"
 ## Current date and time in thread.timezone. No extra cost.
 datetime = false
 

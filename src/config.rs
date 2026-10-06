@@ -3,7 +3,7 @@
 //! Secrets come from environment variables ([`EnvConfig`]); everything else
 //! comes from the TOML file pointed to by `CONFIG_FILE_PATH` ([`PythiaConfig`]).
 
-use crate::llm::{ServerTool, WebSearchEngine};
+use crate::llm::{ServerTool, WebFetchEngine, WebSearchEngine};
 use serde::Deserialize;
 use std::{path::PathBuf, str::FromStr, sync::OnceLock};
 
@@ -223,7 +223,11 @@ pub struct ToolsConfig {
     pub web_search: bool,
     /// Left to OpenRouter (`auto`) when unset.
     pub web_search_engine: Option<WebSearchEngine>,
+    /// Engine-specific and passed through as written; left to OpenRouter when unset.
+    pub web_search_mode: Option<String>,
     pub web_fetch: bool,
+    /// Left to OpenRouter (`auto`) when unset.
+    pub web_fetch_engine: Option<WebFetchEngine>,
     pub datetime: bool,
 }
 
@@ -231,10 +235,13 @@ impl ToolsConfig {
     /// The enabled tools; `datetime` reports the time in `timezone`.
     pub fn server_tools(&self, timezone: &str) -> Vec<ServerTool> {
         [
-            self.web_search.then_some(ServerTool::WebSearch {
+            self.web_search.then(|| ServerTool::WebSearch {
                 engine: self.web_search_engine,
+                mode: self.web_search_mode.clone(),
             }),
-            self.web_fetch.then_some(ServerTool::WebFetch),
+            self.web_fetch.then_some(ServerTool::WebFetch {
+                engine: self.web_fetch_engine,
+            }),
             self.datetime.then(|| ServerTool::Datetime {
                 timezone: timezone.to_string(),
             }),
@@ -465,6 +472,8 @@ mod tests {
         assert_eq!(config.attachments.max_image_bytes, 5242880);
         assert!(!config.tools.web_search);
         assert_eq!(config.tools.web_search_engine, None);
+        assert_eq!(config.tools.web_search_mode, None);
+        assert_eq!(config.tools.web_fetch_engine, None);
         assert!(!config.tools.web_fetch);
         assert!(!config.tools.datetime);
         assert_eq!(config.thread.timezone, "Asia/Tokyo");
@@ -493,6 +502,8 @@ mod tests {
         assert_eq!(config.attachments.max_image_bytes, 5242880);
         assert!(!config.tools.web_search);
         assert_eq!(config.tools.web_search_engine, None);
+        assert_eq!(config.tools.web_search_mode, None);
+        assert_eq!(config.tools.web_fetch_engine, None);
         assert!(!config.tools.web_fetch);
         assert!(!config.tools.datetime);
         assert_eq!(config.thread.timezone, "Asia/Tokyo");
@@ -573,14 +584,28 @@ mod tests {
 
     #[test]
     fn enabled_tools_are_listed_with_datetime_in_the_given_timezone() {
-        let toml = "[llm]\nmodel = \"x\"\n[tools]\nweb_search = true\nweb_search_engine = \"parallel\"\ndatetime = true";
+        let toml = r#"
+            [llm]
+            model = "x"
+            [tools]
+            web_search = true
+            web_search_engine = "parallel"
+            web_search_mode = "fast"
+            web_fetch = true
+            web_fetch_engine = "openrouter"
+            datetime = true
+        "#;
         let config: PythiaConfig = toml.parse().unwrap();
 
         assert_eq!(
             config.tools.server_tools("Asia/Tokyo"),
             [
                 ServerTool::WebSearch {
-                    engine: Some(WebSearchEngine::Parallel)
+                    engine: Some(WebSearchEngine::Parallel),
+                    mode: Some("fast".to_string()),
+                },
+                ServerTool::WebFetch {
+                    engine: Some(WebFetchEngine::OpenRouter)
                 },
                 ServerTool::Datetime {
                     timezone: "Asia/Tokyo".to_string()
@@ -591,13 +616,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_web_search_engine_fails_to_parse() {
-        let toml = "[llm]\nmodel = \"x\"\n[tools]\nweb_search_engine = \"google\"";
-        let result: Result<PythiaConfig, _> = toml.parse();
-        assert!(
-            matches!(result, Err(PythiaConfigError::Parse(_))),
-            "{result:?}"
-        );
+    fn unknown_web_search_or_fetch_engine_fails_to_parse() {
+        for key in ["web_search_engine", "web_fetch_engine"] {
+            let toml = format!("[llm]\nmodel = \"x\"\n[tools]\n{key} = \"google\"");
+            let result: Result<PythiaConfig, _> = toml.parse();
+            assert!(
+                matches!(result, Err(PythiaConfigError::Parse(_))),
+                "{key}: {result:?}"
+            );
+        }
     }
 
     #[test]

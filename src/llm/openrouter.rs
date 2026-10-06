@@ -5,7 +5,7 @@
 
 use super::{
     ChatRequest, ChatResponse, Citation, Content, Finish, LlmError, ModelCapabilities, Part, Role,
-    ServerTool, Usage, WebSearchEngine,
+    ServerTool, Usage, WebFetchEngine, WebSearchEngine,
 };
 use anyhow::Context as _;
 use bytes::Bytes;
@@ -227,15 +227,24 @@ struct WireRequest<'a> {
 struct WireTool<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<WireToolParameters<'a>>,
+    #[serde(skip_serializing_if = "WireToolParameters::is_empty")]
+    parameters: WireToolParameters<'a>,
 }
 
-#[derive(Serialize)]
-#[serde(untagged)]
-enum WireToolParameters<'a> {
-    WebSearch { engine: &'static str },
-    Datetime { timezone: &'a str },
+#[derive(Serialize, Default)]
+struct WireToolParameters<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timezone: Option<&'a str>,
+}
+
+impl WireToolParameters<'_> {
+    fn is_empty(&self) -> bool {
+        self.engine.is_none() && self.mode.is_none() && self.timezone.is_none()
+    }
 }
 
 #[derive(Serialize)]
@@ -294,24 +303,43 @@ fn wire_content(content: &Content) -> WireContent<'_> {
 
 fn wire_tool(tool: &ServerTool) -> WireTool<'_> {
     match tool {
-        ServerTool::WebSearch { engine } => WireTool {
+        ServerTool::WebSearch { engine, mode } => WireTool {
             kind: "openrouter:web_search",
-            parameters: engine.map(|engine| WireToolParameters::WebSearch {
-                engine: engine_name(engine),
-            }),
+            parameters: WireToolParameters {
+                engine: engine.map(search_engine_name),
+                mode: mode.as_deref(),
+                ..Default::default()
+            },
         },
-        ServerTool::WebFetch => WireTool {
+        ServerTool::WebFetch { engine } => WireTool {
             kind: "openrouter:web_fetch",
-            parameters: None,
+            parameters: WireToolParameters {
+                engine: engine.map(fetch_engine_name),
+                ..Default::default()
+            },
         },
         ServerTool::Datetime { timezone } => WireTool {
             kind: "openrouter:datetime",
-            parameters: Some(WireToolParameters::Datetime { timezone }),
+            parameters: WireToolParameters {
+                timezone: Some(timezone),
+                ..Default::default()
+            },
         },
     }
 }
 
-fn engine_name(engine: WebSearchEngine) -> &'static str {
+fn fetch_engine_name(engine: WebFetchEngine) -> &'static str {
+    match engine {
+        WebFetchEngine::Auto => "auto",
+        WebFetchEngine::Native => "native",
+        WebFetchEngine::Exa => "exa",
+        WebFetchEngine::OpenRouter => "openrouter",
+        WebFetchEngine::Firecrawl => "firecrawl",
+        WebFetchEngine::Parallel => "parallel",
+    }
+}
+
+fn search_engine_name(engine: WebSearchEngine) -> &'static str {
     match engine {
         WebSearchEngine::Auto => "auto",
         WebSearchEngine::Native => "native",
@@ -723,11 +751,18 @@ mod tests {
             messages: vec![user(Content::Text("hello".to_string()))],
             max_output_tokens: 256,
             tools: vec![
-                ServerTool::WebSearch { engine: None },
+                ServerTool::WebSearch {
+                    engine: None,
+                    mode: None,
+                },
                 ServerTool::WebSearch {
                     engine: Some(WebSearchEngine::Parallel),
+                    mode: Some("fast".to_string()),
                 },
-                ServerTool::WebFetch,
+                ServerTool::WebFetch { engine: None },
+                ServerTool::WebFetch {
+                    engine: Some(WebFetchEngine::OpenRouter),
+                },
                 ServerTool::Datetime {
                     timezone: "Asia/Tokyo".to_string(),
                 },
@@ -738,8 +773,9 @@ mod tests {
             body_json(&request)["tools"],
             json!([
                 {"type": "openrouter:web_search"},
-                {"type": "openrouter:web_search", "parameters": {"engine": "parallel"}},
+                {"type": "openrouter:web_search", "parameters": {"engine": "parallel", "mode": "fast"}},
                 {"type": "openrouter:web_fetch"},
+                {"type": "openrouter:web_fetch", "parameters": {"engine": "openrouter"}},
                 {"type": "openrouter:datetime", "parameters": {"timezone": "Asia/Tokyo"}},
             ])
         );
@@ -1278,7 +1314,10 @@ mod tests {
             ))],
             max_output_tokens: 1024,
             tools: vec![
-                ServerTool::WebSearch { engine: None },
+                ServerTool::WebSearch {
+                    engine: None,
+                    mode: None,
+                },
                 ServerTool::Datetime {
                     timezone: "Asia/Tokyo".to_string(),
                 },
