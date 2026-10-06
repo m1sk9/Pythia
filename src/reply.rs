@@ -2,7 +2,7 @@
 //!
 //! Splitting and embed building are pure; only `post_*` touch the network.
 
-use crate::llm::{ChatResponse, Citation, Finish, LlmError};
+use crate::llm::{ChatResponse, Citation, Finish, LlmError, Usage};
 use twilight_model::{
     channel::message::{AllowedMentions, Embed},
     id::{
@@ -16,9 +16,11 @@ use twilight_util::builder::embed::{EmbedBuilder, EmbedFieldBuilder};
 pub const MESSAGE_LIMIT: usize = 2000;
 const OUTPUT_TRUNCATED_NOTE: &str = "\n\n(output truncated: max_output_tokens reached)";
 const RESPONSE_TRUNCATED_NOTE: &str = "\n\n(response truncated: too long for Discord)";
-/// First line of the source list under an answer; also how the context
-/// recognises the list in earlier answers.
-pub const SOURCES_HEADING: &str = "-# Sources";
+const SOURCES_HEADING: &str = "-# Sources";
+const SEARCHES_ICON: &str = "🔍";
+const TOOL_CALLS_ICON: &str = "🔧";
+/// How each line of the footer under an answer starts.
+const FOOTER_STARTS: [&str; 3] = ["-# Sources\n", "-# 🔍 ", "-# 🔧 "];
 const MAX_SOURCES: usize = 5;
 const MAX_SOURCE_TITLE_CHARS: usize = 100;
 const FENCE: &str = "```";
@@ -97,16 +99,23 @@ fn open_fence_info(text: &str) -> Option<&str> {
 }
 
 /// The messages to post for an answer: the truncation note when the model hit
-/// `max_output_tokens` and the cited sources, split into at most `max_parts`
-/// messages.
+/// `max_output_tokens` and a footer with the server tools used and the cited
+/// sources, split into at most `max_parts` messages.
 pub fn answer_parts(response: &ChatResponse, max_parts: usize) -> Vec<String> {
     let mut text = response.text.clone();
     if response.finish == Finish::Length {
         text.push_str(OUTPUT_TRUNCATED_NOTE);
     }
-    if let Some(sources) = sources_list(&response.citations) {
+    let footer: Vec<String> = [
+        tool_activity(response.usage.as_ref()),
+        sources_list(&response.citations),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !footer.is_empty() {
         text.push_str("\n\n");
-        text.push_str(&sources);
+        text.push_str(&footer.join("\n"));
     }
 
     let mut parts = split_message(&text, MESSAGE_LIMIT);
@@ -120,6 +129,52 @@ pub fn answer_parts(response: &ChatResponse, max_parts: usize) -> Vec<String> {
         }
     }
     parts
+}
+
+/// A small-text line counting the searches and tool calls, when there were any.
+fn tool_activity(usage: Option<&Usage>) -> Option<String> {
+    let usage = usage?;
+    let items: Vec<String> = [
+        (
+            SEARCHES_ICON,
+            usage.web_search_requests,
+            "search",
+            "searches",
+        ),
+        (
+            TOOL_CALLS_ICON,
+            usage.server_tool_calls,
+            "tool call",
+            "tool calls",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(icon, count, one, many)| {
+        let count = count.filter(|&count| count > 0)?;
+        Some(format!(
+            "{icon} {count} {}",
+            if count == 1 { one } else { many }
+        ))
+    })
+    .collect();
+    (!items.is_empty()).then(|| format!("-# {}", items.join(" · ")))
+}
+
+/// An earlier answer of the bot without the footer posted under it. The
+/// footer is left out of the context because the model would otherwise copy
+/// it and write sources that it never looked up.
+pub fn without_footer(content: &str) -> &str {
+    let start = FOOTER_STARTS
+        .iter()
+        .filter_map(|start| {
+            if content.starts_with(start) {
+                Some(0)
+            } else {
+                content.find(&format!("\n\n{start}"))
+            }
+        })
+        .min();
+    start.map_or(content, |i| content[..i].trim_end())
 }
 
 /// A small-text list of the first [`MAX_SOURCES`] http(s) citations, linked
@@ -496,6 +551,77 @@ mod tests {
             )),
             "{parts:?}"
         );
+    }
+
+    fn used_tools(searches: Option<u64>, tool_calls: Option<u64>) -> Option<Usage> {
+        Some(Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cost: None,
+            web_search_requests: searches,
+            server_tool_calls: tool_calls,
+        })
+    }
+
+    #[test]
+    fn tool_activity_counts_searches_and_tool_calls_above_the_sources() {
+        let response = ChatResponse {
+            usage: used_tools(Some(2), Some(3)),
+            ..cited("answer", &[("https://a.example/", Some("A"))])
+        };
+
+        assert_eq!(
+            answer_parts(&response, 5),
+            ["answer\n\n-# 🔍 2 searches · 🔧 3 tool calls\n\
+              -# Sources\n-# 1. [A](<https://a.example/>)"]
+        );
+    }
+
+    #[test]
+    fn tool_activity_leaves_out_zero_and_unreported_counts_and_uses_the_singular() {
+        let line = |usage| {
+            let response = ChatResponse {
+                usage,
+                ..cited("answer", &[])
+            };
+            answer_parts(&response, 5).swap_remove(0)
+        };
+
+        assert_eq!(
+            line(used_tools(Some(1), Some(1))),
+            "answer\n\n-# 🔍 1 search · 🔧 1 tool call"
+        );
+        assert_eq!(
+            line(used_tools(Some(0), Some(2))),
+            "answer\n\n-# 🔧 2 tool calls"
+        );
+        assert_eq!(line(used_tools(None, None)), "answer");
+        assert_eq!(line(None), "answer");
+    }
+
+    #[test]
+    fn footer_is_removed_from_every_part_of_a_posted_answer() {
+        let text = format!("{}\n\n{}", "a".repeat(1500), "b".repeat(480));
+        let response = ChatResponse {
+            usage: used_tools(Some(1), Some(2)),
+            ..cited(&text, &[("https://a.example/", Some("A"))])
+        };
+
+        let parts = answer_parts(&response, 5);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        let kept: Vec<&str> = parts
+            .iter()
+            .map(|part| without_footer(part))
+            .filter(|part| !part.is_empty())
+            .collect();
+        assert_eq!(kept, [text.as_str()]);
+    }
+
+    #[test]
+    fn answer_without_a_footer_is_kept_whole() {
+        let text = "intro\n\n-# small print the model wrote\n\nend";
+        assert_eq!(without_footer(text), text);
     }
 
     #[test]

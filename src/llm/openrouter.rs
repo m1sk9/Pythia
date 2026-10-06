@@ -383,6 +383,7 @@ struct WireUsage {
 #[derive(Deserialize)]
 struct WireServerToolUse {
     web_search_requests: Option<u64>,
+    tool_calls_executed: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -488,7 +489,11 @@ fn parse_completion(body: &[u8], model: &str, retries: u32) -> Result<ChatRespon
             cost: usage.cost,
             web_search_requests: usage
                 .server_tool_use
+                .as_ref()
                 .and_then(|tools| tools.web_search_requests),
+            server_tool_calls: usage
+                .server_tool_use
+                .and_then(|tools| tools.tool_calls_executed),
         }),
         citations: citations(annotations),
     })
@@ -771,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn server_tool_use_details_report_web_search_requests() {
+    fn server_tool_use_details_report_searches_and_executed_tool_calls() {
         for key in ["server_tool_use_details", "server_tool_use"] {
             let body = serde_json::to_vec(&json!({
                 "id": "gen-123",
@@ -781,13 +786,14 @@ mod tests {
                     "completion_tokens": 208,
                     "total_tokens": 1976,
                     "cost": 0.007,
-                    key: {"web_search_requests": 1, "tool_calls_requested": 1, "tool_calls_executed": 1},
+                    key: {"web_search_requests": 1, "tool_calls_requested": 3, "tool_calls_executed": 2},
                 },
             }))
             .unwrap();
 
             let usage = parse_completion(&body, MODEL, 0).unwrap().usage.unwrap();
             assert_eq!(usage.web_search_requests, Some(1), "{key}");
+            assert_eq!(usage.server_tool_calls, Some(2), "{key}");
         }
     }
 
@@ -831,6 +837,7 @@ mod tests {
                     total_tokens: 14,
                     cost: Some(0.0000027),
                     web_search_requests: None,
+                    server_tool_calls: None,
                 }),
                 citations: Vec::new(),
             }

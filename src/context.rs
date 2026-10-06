@@ -6,7 +6,7 @@
 use crate::{
     attachments::ImageOutcome,
     llm::{ChatMessage, Content, Part, Role},
-    reply::SOURCES_HEADING,
+    reply::without_footer,
 };
 use std::collections::HashMap;
 use twilight_model::{
@@ -151,7 +151,7 @@ fn to_entry(
     }
 
     if author.id == bot_id {
-        let text = without_sources(&message.content);
+        let text = without_footer(&message.content);
         return (!text.is_empty()).then(|| Entry {
             role: Role::Assistant,
             text: text.to_string(),
@@ -234,19 +234,6 @@ pub fn display_name(message: &Message) -> &str {
         .and_then(|member| member.nick.as_deref())
         .or(message.author.global_name.as_deref())
         .unwrap_or(&message.author.name)
-}
-
-/// An answer of the bot without the source list posted under it. The list is
-/// left out because the model would otherwise copy its format and write
-/// sources that it never looked up.
-fn without_sources(content: &str) -> &str {
-    let heading = format!("{SOURCES_HEADING}\n");
-    let start = if content.starts_with(&heading) {
-        Some(0)
-    } else {
-        content.find(&format!("\n\n{heading}"))
-    };
-    start.map_or(content, |i| content[..i].trim_end())
 }
 
 /// Removes mentions of the bot and replaces other user mentions with `@name`,
@@ -654,10 +641,11 @@ mod tests {
     }
 
     #[test]
-    fn source_lists_under_earlier_answers_are_not_sent() {
+    fn footers_under_earlier_answers_are_not_sent() {
         let history = [
-            message(4, ALICE, "next"),
-            message(3, BOT, "-# Sources\n-# 1. [A](<https://a.example/>)"),
+            message(5, ALICE, "next"),
+            message(4, BOT, "-# Sources\n-# 1. [A](<https://a.example/>)"),
+            message(3, BOT, "more\n\n-# 🔧 1 tool call"),
             message(
                 2,
                 BOT,
@@ -670,7 +658,7 @@ mod tests {
             texts(&build(&history, None)),
             [
                 (Role::User, "alice: q"),
-                (Role::Assistant, "answer"),
+                (Role::Assistant, "answer\nmore"),
                 (Role::User, "alice: next"),
             ]
         );

@@ -157,6 +157,7 @@ async fn run_turn(
                 completion_tokens = usage.map(|u| u.completion_tokens),
                 cost = usage.and_then(|u| u.cost),
                 web_search_requests = usage.and_then(|u| u.web_search_requests),
+                server_tool_calls = usage.and_then(|u| u.server_tool_calls),
                 citations = response.citations.len(),
                 finish = ?response.finish,
                 elapsed_ms = started.elapsed().as_millis(),

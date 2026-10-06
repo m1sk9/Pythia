@@ -92,6 +92,8 @@ pub struct Usage {
     pub cost: Option<f64>,
     /// Web searches run by the provider, when it reports them.
     pub web_search_requests: Option<u64>,
+    /// Server tool calls of every kind, searches included, when reported.
+    pub server_tool_calls: Option<u64>,
 }
 
 /// What the configured model accepts as input.
