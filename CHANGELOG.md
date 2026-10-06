@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/m1sk9/Pythia/compare/v3.0.0...v3.1.0) (2026-10-06)
+
+
+### Features
+
+* Let the model search and fetch the web through OpenRouter server tools ([#321](https://github.com/m1sk9/Pythia/issues/321)) ([e59613b](https://github.com/m1sk9/Pythia/commit/e59613bf7472ce625f5483d65ad7ae2fe352d110))
+
 ## [3.0.0](https://github.com/m1sk9/Pythia/compare/v2.4.1...v3.0.0) (2026-10-05)
 
 
