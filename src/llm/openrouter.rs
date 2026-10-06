@@ -374,6 +374,9 @@ struct WireUsage {
     completion_tokens: u64,
     total_tokens: u64,
     cost: Option<f64>,
+    // Chat completions report `server_tool_use_details`; the docs only show
+    // the Responses API's `server_tool_use`.
+    #[serde(alias = "server_tool_use_details")]
     server_tool_use: Option<WireServerToolUse>,
 }
 
@@ -768,22 +771,24 @@ mod tests {
     }
 
     #[test]
-    fn server_tool_use_reports_web_search_requests() {
-        let body = serde_json::to_vec(&json!({
-            "id": "gen-123",
-            "choices": [{"finish_reason": "stop", "message": {"content": "answer"}}],
-            "usage": {
-                "prompt_tokens": 1200,
-                "completion_tokens": 80,
-                "total_tokens": 1280,
-                "cost": 0.012,
-                "server_tool_use": {"web_search_requests": 2},
-            },
-        }))
-        .unwrap();
+    fn server_tool_use_details_report_web_search_requests() {
+        for key in ["server_tool_use_details", "server_tool_use"] {
+            let body = serde_json::to_vec(&json!({
+                "id": "gen-123",
+                "choices": [{"finish_reason": "stop", "message": {"content": "answer"}}],
+                "usage": {
+                    "prompt_tokens": 1768,
+                    "completion_tokens": 208,
+                    "total_tokens": 1976,
+                    "cost": 0.007,
+                    key: {"web_search_requests": 1, "tool_calls_requested": 1, "tool_calls_executed": 1},
+                },
+            }))
+            .unwrap();
 
-        let usage = parse_completion(&body, MODEL, 0).unwrap().usage.unwrap();
-        assert_eq!(usage.web_search_requests, Some(2));
+            let usage = parse_completion(&body, MODEL, 0).unwrap().usage.unwrap();
+            assert_eq!(usage.web_search_requests, Some(1), "{key}");
+        }
     }
 
     #[test]
