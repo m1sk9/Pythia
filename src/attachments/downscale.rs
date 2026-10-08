@@ -2,8 +2,8 @@
 
 use super::sniff_image;
 use image::{
-    DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits,
-    codecs::jpeg::JpegEncoder,
+    DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits, RgbImage,
+    codecs::jpeg::JpegEncoder, metadata::Orientation,
 };
 use std::io::Cursor;
 
@@ -36,8 +36,17 @@ pub enum FitError {
     Decode(#[source] ImageError),
     #[error("image could not be re-encoded")]
     Encode(#[source] ImageError),
-    #[error("image exceeds the size limit even after downscaling")]
+    #[error("image exceeds the size limits")]
     TooLarge,
+}
+
+impl FitError {
+    fn from_decode(error: ImageError) -> Self {
+        match error {
+            ImageError::Limits(_) => Self::TooLarge,
+            error => Self::Decode(error),
+        }
+    }
 }
 
 /// Returns `bytes` untouched when they are within both limits; otherwise
@@ -45,10 +54,10 @@ pub enum FitError {
 /// sources as JPEG and turning the rest into PNG unless only JPEG fits.
 pub fn fit(bytes: Vec<u8>, limits: &FitLimits) -> Result<Fitted, FitError> {
     let source_mime = sniff_image(&bytes).ok_or(FitError::NotAnImage)?;
-    let (width, height) = reader(&bytes)?
-        .into_dimensions()
-        .map_err(FitError::Decode)?;
+    let decoder = decoder(&bytes)?;
+    let (width, height) = decoder.dimensions();
     if width.max(height) <= limits.max_edge && bytes.len() <= limits.max_bytes {
+        drop(decoder);
         return Ok(Fitted {
             mime: source_mime,
             bytes,
@@ -56,7 +65,7 @@ pub fn fit(bytes: Vec<u8>, limits: &FitLimits) -> Result<Fitted, FitError> {
         });
     }
 
-    let image = decode(&bytes)?;
+    let image = decode(decoder)?;
     let longest = image.width().max(image.height());
     let lossless = source_mime != "image/jpeg";
     let mut max_edge = limits.max_edge.min(longest);
@@ -88,7 +97,7 @@ fn decode_limits() -> Limits {
     limits
 }
 
-fn reader(bytes: &[u8]) -> Result<ImageReader<Cursor<&[u8]>>, FitError> {
+fn decoder(bytes: &[u8]) -> Result<impl ImageDecoder + '_, FitError> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| FitError::Decode(ImageError::IoError(error)))?;
@@ -96,17 +105,17 @@ fn reader(bytes: &[u8]) -> Result<ImageReader<Cursor<&[u8]>>, FitError> {
         return Err(FitError::NotAnImage);
     }
     reader.limits(decode_limits());
-    Ok(reader)
+    reader.into_decoder().map_err(FitError::from_decode)
 }
 
-fn decode(bytes: &[u8]) -> Result<DynamicImage, FitError> {
-    let mut decoder = reader(bytes)?.into_decoder().map_err(FitError::Decode)?;
-    let orientation = decoder.orientation().map_err(FitError::Decode)?;
+fn decode(mut decoder: impl ImageDecoder) -> Result<DynamicImage, FitError> {
+    // An unreadable EXIF chunk only loses the rotation; the pixels still decode.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     // Not every decoder honours `max_alloc`, so the output buffer is checked up front.
     decode_limits()
         .reserve(decoder.total_bytes())
-        .map_err(FitError::Decode)?;
-    let mut image = DynamicImage::from_decoder(decoder).map_err(FitError::Decode)?;
+        .map_err(FitError::from_decode)?;
+    let mut image = DynamicImage::from_decoder(decoder).map_err(FitError::from_decode)?;
     image.apply_orientation(orientation);
     Ok(image)
 }
@@ -129,12 +138,28 @@ fn encode(
         }
     }
     let mut jpeg = Cursor::new(Vec::new());
-    image
-        .to_rgb8()
+    flatten_onto_white(image)
         .write_with_encoder(JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY))
         .map_err(FitError::Encode)?;
     let jpeg = jpeg.into_inner();
     Ok((jpeg.len() <= max_bytes).then_some(("image/jpeg", jpeg)))
+}
+
+/// JPEG has no alpha, and `to_rgb8` alone would show transparent pixels in
+/// their stored colour, usually black.
+fn flatten_onto_white(image: &DynamicImage) -> RgbImage {
+    if !image.color().has_alpha() {
+        return image.to_rgb8();
+    }
+    let rgba = image.to_rgba8();
+    RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+        let [r, g, b, a] = rgba.get_pixel(x, y).0;
+        let over_white = |channel: u8| {
+            let (channel, alpha) = (u16::from(channel), u16::from(a));
+            ((channel * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+        };
+        image::Rgb([over_white(r), over_white(g), over_white(b)])
+    })
 }
 
 #[cfg(test)]
@@ -164,21 +189,6 @@ mod tests {
             let v = x * 7 + y * 13 + x * y;
             image::Rgb([v as u8, (v >> 3) as u8, (v >> 5) as u8])
         }))
-    }
-
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc = !0u32;
-        for &byte in data {
-            crc ^= u32::from(byte);
-            for _ in 0..8 {
-                crc = if crc & 1 == 1 {
-                    0xEDB8_8320 ^ (crc >> 1)
-                } else {
-                    crc >> 1
-                };
-            }
-        }
-        !crc
     }
 
     fn dimensions(bytes: &[u8]) -> (u32, u32) {
@@ -265,6 +275,30 @@ mod tests {
     }
 
     #[test]
+    fn transparent_pixels_are_flattened_onto_white_in_jpeg() {
+        let opaque = noise().to_rgb8();
+        let half_transparent = DynamicImage::ImageRgba8(RgbaImage::from_fn(256, 256, |x, y| {
+            let [r, g, b] = opaque.get_pixel(x, y).0;
+            image::Rgba([r, g, b, if x < 128 { 0 } else { 255 }])
+        }));
+        let png = encoded(half_transparent, ImageFormat::Png);
+        let limits = FitLimits {
+            max_bytes: png.len() - 1,
+            ..ROOMY
+        };
+
+        let fitted = fit(png, &limits).unwrap();
+
+        assert_eq!(fitted.mime, "image/jpeg");
+        let decoded = image::load_from_memory(&fitted.bytes).unwrap().to_rgb8();
+        assert!(
+            decoded.get_pixel(32, 128).0.iter().all(|&c| c >= 250),
+            "{:?}",
+            decoded.get_pixel(32, 128)
+        );
+    }
+
+    #[test]
     fn images_still_over_the_byte_limit_after_shrinking_are_too_large() {
         let png = encoded(noise(), ImageFormat::Png);
         let limits = FitLimits {
@@ -281,13 +315,12 @@ mod tests {
             DynamicImage::ImageRgb8(gradient(400, 200).to_rgb8()),
             ImageFormat::Jpeg,
         );
-        // APP1 Exif segment: little-endian TIFF, IFD0 with Orientation = 6 (rotate 90° CW).
-        let app1: &[u8] = &[
+        let exif_rotate_90_cw: &[u8] = &[
             0xFF, 0xE1, 0x00, 0x22, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x49, 0x49, 0x2A, 0x00,
             0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00,
             0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        let rotated = [&jpeg[..2], app1, &jpeg[2..]].concat();
+        let rotated = [&jpeg[..2], exif_rotate_90_cw, &jpeg[2..]].concat();
         let limits = FitLimits {
             max_edge: 100,
             ..ROOMY
@@ -311,13 +344,9 @@ mod tests {
     }
 
     #[test]
-    fn decode_limits_reject_absurd_dimensions() {
-        let mut png = encoded(gradient(10, 10), ImageFormat::Png);
-        // IHDR: type and data at 12..29 (width first), CRC at 29..33.
-        png[16..20].copy_from_slice(&100_000u32.to_be_bytes());
-        let crc = crc32(&png[12..29]);
-        png[29..33].copy_from_slice(&crc.to_be_bytes());
+    fn images_over_the_decode_limits_are_too_large() {
+        let png = encoded(gradient(MAX_DECODE_DIMENSION + 1, 1), ImageFormat::Png);
 
-        assert!(matches!(fit(png, &ROOMY), Err(FitError::Decode(_))));
+        assert!(matches!(fit(png, &ROOMY), Err(FitError::TooLarge)));
     }
 }

@@ -7,8 +7,8 @@ mod downscale;
 use crate::context::is_image_attachment;
 use base64::Engine as _;
 use downscale::{FitError, FitLimits, Fitted};
-use std::{collections::HashMap, time::Duration};
-use tokio::task::JoinSet;
+use std::{collections::HashMap, error::Error as _, time::Duration};
+use tokio::{sync::Semaphore, task::JoinSet};
 use twilight_model::{
     channel::{Attachment, Message},
     id::{Id, marker::AttachmentMarker},
@@ -16,6 +16,10 @@ use twilight_model::{
 
 /// Per-download timeout, independent of the LLM timeout on the shared client.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Decoding is bounded per image only, so concurrent turns could otherwise
+/// hold up to `max_images * limits.max_concurrent` full-size frames at once.
+static DECODE_PERMITS: Semaphore = Semaphore::const_new(2);
 
 /// Which images go to the model (`[attachments]` plus the model's capabilities).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +45,8 @@ pub enum ImageOutcome {
         mime: &'static str,
         base64: String,
     },
-    /// Over `max_download_bytes`, or over `max_image_bytes` even after downscaling.
+    /// Over `max_download_bytes`, over the decoding limits, or over
+    /// `max_image_bytes` even after downscaling.
     TooLarge,
     /// Downloaded, but not a supported image or not decodable.
     Unreadable,
@@ -176,7 +181,14 @@ pub async fn fetch_images(
                     ImageOutcome::fetched(fitted)
                 }
                 Err(error) => {
-                    tracing::warn!(%error, %filename, "failed to fetch image");
+                    // reqwest's source would log the signed CDN URL.
+                    let cause = match &error {
+                        FetchError::Fit(_) => error.source().map(ToString::to_string),
+                        FetchError::Request(_) | FetchError::Status(_) | FetchError::TooLarge => {
+                            None
+                        }
+                    };
+                    tracing::warn!(%error, cause, %filename, "failed to fetch image");
                     ImageOutcome::from_error(&error)
                 }
             };
@@ -224,13 +236,20 @@ async fn fetch_image(
     };
     // A panicking decoder is reported like an undecodable image rather than
     // through a separate variant, since the user-facing outcome is the same.
-    let fitted = tokio::task::spawn_blocking(move || downscale::fit(bytes, &limits))
+    let permit = DECODE_PERMITS
+        .acquire()
         .await
-        .unwrap_or_else(|error| {
-            Err(FitError::Decode(image::ImageError::IoError(
-                std::io::Error::other(error),
-            )))
-        })?;
+        .expect("DECODE_PERMITS is never closed");
+    let fitted = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        downscale::fit(bytes, &limits)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        Err(FitError::Decode(image::ImageError::IoError(
+            std::io::Error::other(error),
+        )))
+    })?;
     Ok(fitted)
 }
 
@@ -308,7 +327,7 @@ mod tests {
 
     #[test]
     fn images_over_the_download_limit_are_never_selected_and_marked_too_large() {
-        let messages = [message(vec![image(1, 1001), image(2, 800)])];
+        let messages = [message(vec![image(1, 1001), image(2, 1000)])];
         let newest_first: Vec<_> = messages.iter().collect();
 
         let plan = select_images(&newest_first, &policy());
