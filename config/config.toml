@@ -23,6 +23,14 @@ max_output_tokens = 4096
 timeout_secs = 120
 ## Retries apply to 429 / 5xx / connection errors only.
 max_retries = 2
+## Reasoning effort: "max", "xhigh", "high", "medium", "low", "minimal", or "none".
+## Unset leaves it to the model's default. Ignored (with a warning) when the
+## model does not take it. Reasoning tokens count against max_output_tokens,
+## so raise that too when raising the effort: models that take a token budget
+## spend up to 95% of max_output_tokens on reasoning at "max" / "xhigh" (80% at
+## "high", 50% at "medium"), never less than 1024 tokens, and some (Anthropic)
+## reject requests whose max_output_tokens is not above that budget.
+# reasoning_effort = "medium"
 
 [context]
 ## Thread messages fetched per turn (Discord allows at most 100 per request).

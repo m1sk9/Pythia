@@ -271,7 +271,7 @@ pub fn error_embed(error: &LlmError) -> Embed {
         ),
         LlmError::OutputTokenLimit { .. } => (
             "Output token limit reached",
-            "The model used up `max_output_tokens` before writing an answer.",
+            "The model used up `max_output_tokens` (reasoning included) before writing an answer. Raise `llm.max_output_tokens` or lower `llm.reasoning_effort`.",
         ),
         LlmError::EmptyResponse { .. } => ("Empty response", "The model returned no text."),
         LlmError::InResponse { .. } => (
@@ -867,6 +867,21 @@ mod tests {
                 "Generation failed",
                 "Unexpected response",
             ]
+        );
+    }
+
+    #[test]
+    fn output_token_limit_embed_points_at_the_settings_that_fix_it() {
+        let embed = error_embed(&every_error("k")[5]);
+        let description = embed.description.unwrap();
+
+        assert!(
+            description.contains("llm.max_output_tokens"),
+            "{description}"
+        );
+        assert!(
+            description.contains("llm.reasoning_effort"),
+            "{description}"
         );
     }
 
