@@ -1,9 +1,12 @@
-//! Image attachments: which ones to send, downloading, and validation.
+//! Image attachments: which ones to send, downloading, and downscaling.
 //!
-//! Selection and validation are pure; only `fetch_*` touch the network.
+//! Selection and downscaling are pure; only `fetch_*` touch the network.
+
+mod downscale;
 
 use crate::context::is_image_attachment;
 use base64::Engine as _;
+use downscale::{FitError, FitLimits, Fitted};
 use std::{collections::HashMap, time::Duration};
 use tokio::task::JoinSet;
 use twilight_model::{
@@ -22,6 +25,11 @@ pub struct ImagePolicy {
     pub max_images: usize,
     /// Only images on this many of the newest user messages are sent.
     pub recent_messages: usize,
+    /// Images whose longest side exceeds this are downscaled before sending.
+    pub max_image_edge: u32,
+    /// Attachments larger than this are never downloaded.
+    pub max_download_bytes: usize,
+    /// Images still larger than this after downscaling are left out.
     pub max_image_bytes: usize,
 }
 
@@ -29,9 +37,34 @@ pub struct ImagePolicy {
 /// selected (too old, over the count, or images are disabled).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageOutcome {
-    Fetched { mime: &'static str, base64: String },
+    Fetched {
+        mime: &'static str,
+        base64: String,
+    },
+    /// Over `max_download_bytes`, or over `max_image_bytes` even after downscaling.
     TooLarge,
+    /// Downloaded, but not a supported image or not decodable.
+    Unreadable,
     DownloadFailed,
+}
+
+impl ImageOutcome {
+    pub fn fetched(fitted: Fitted) -> Self {
+        Self::Fetched {
+            mime: fitted.mime,
+            base64: base64::engine::general_purpose::STANDARD.encode(fitted.bytes),
+        }
+    }
+
+    pub fn from_error(error: &FetchError) -> Self {
+        match error {
+            FetchError::TooLarge | FetchError::Fit(FitError::TooLarge) => Self::TooLarge,
+            FetchError::Fit(FitError::NotAnImage | FitError::Decode(_) | FitError::Encode(_)) => {
+                Self::Unreadable
+            }
+            FetchError::Request(_) | FetchError::Status(_) => Self::DownloadFailed,
+        }
+    }
 }
 
 /// The result of [`select_images`].
@@ -39,7 +72,7 @@ pub enum ImageOutcome {
 pub struct ImagePlan<'a> {
     /// Images to download, newest first.
     pub fetch: Vec<&'a Attachment>,
-    /// Images that would have been candidates but exceed `max_image_bytes`.
+    /// Images that would have been candidates but exceed `max_download_bytes`.
     pub too_large: Vec<Id<AttachmentMarker>>,
 }
 
@@ -59,7 +92,7 @@ pub fn select_images<'a>(
         .flat_map(|message| &message.attachments)
         .filter(|attachment| is_image_attachment(attachment));
     for attachment in candidates {
-        if usize::try_from(attachment.size).map_or(true, |size| size > policy.max_image_bytes) {
+        if usize::try_from(attachment.size).map_or(true, |size| size > policy.max_download_bytes) {
             plan.too_large.push(attachment.id);
         } else if plan.fetch.len() < policy.max_images {
             plan.fetch.push(attachment);
@@ -93,37 +126,25 @@ pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Validates downloaded bytes and encodes them for an image part.
-pub fn to_outcome(bytes: &[u8], max_bytes: usize) -> Result<ImageOutcome, FetchError> {
-    if bytes.len() > max_bytes {
-        return Err(FetchError::TooLarge);
-    }
-    let mime = sniff_image(bytes).ok_or(FetchError::NotAnImage)?;
-    Ok(ImageOutcome::Fetched {
-        mime,
-        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-    })
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum FetchError {
     #[error("request failed")]
     Request(#[from] reqwest::Error),
     #[error("CDN returned HTTP {0}")]
     Status(u16),
-    #[error("image exceeds the size limit")]
+    #[error("image exceeds the download limit")]
     TooLarge,
-    #[error("file is not a PNG, JPEG, GIF, or WebP image")]
-    NotAnImage,
+    #[error(transparent)]
+    Fit(#[from] FitError),
 }
 
-/// Downloads every image in `plan` concurrently. Failures are logged and
-/// recorded as [`ImageOutcome::DownloadFailed`]; they never fail the turn.
+/// Downloads and downscales every image in `plan` concurrently. Failures are
+/// logged and recorded in the outcome; they never fail the turn.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_images(
     http: &reqwest::Client,
     plan: &ImagePlan<'_>,
-    max_bytes: usize,
+    policy: &ImagePolicy,
 ) -> HashMap<Id<AttachmentMarker>, ImageOutcome> {
     let mut outcomes: HashMap<_, _> = plan
         .too_large
@@ -134,17 +155,29 @@ pub async fn fetch_images(
     let mut downloads = JoinSet::new();
     for attachment in &plan.fetch {
         let http = http.clone();
+        let policy = *policy;
         let (id, url, filename) = (
             attachment.id,
             attachment.url.clone(),
             attachment.filename.clone(),
         );
         downloads.spawn(async move {
-            let outcome = match fetch_image(&http, &url, max_bytes).await {
-                Ok(outcome) => outcome,
+            let outcome = match fetch_image(&http, &url, &policy).await {
+                Ok(fitted) => {
+                    if let Some((width, height)) = fitted.resized_from {
+                        tracing::debug!(
+                            %filename,
+                            from = %format!("{width}x{height}"),
+                            bytes = fitted.bytes.len(),
+                            mime = fitted.mime,
+                            "downscaled image"
+                        );
+                    }
+                    ImageOutcome::fetched(fitted)
+                }
                 Err(error) => {
-                    tracing::warn!(%error, %filename, "failed to download image");
-                    ImageOutcome::DownloadFailed
+                    tracing::warn!(%error, %filename, "failed to fetch image");
+                    ImageOutcome::from_error(&error)
                 }
             };
             (id, outcome)
@@ -166,13 +199,14 @@ pub async fn fetch_images(
     outcomes
 }
 
-/// Downloads one image, reading at most `max_bytes + 1` bytes.
+/// Downloads one image, reading at most `max_download_bytes + 1` bytes, and
+/// fits it into `max_image_edge` and `max_image_bytes`.
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn fetch_image(
     http: &reqwest::Client,
     url: &str,
-    max_bytes: usize,
-) -> Result<ImageOutcome, FetchError> {
+    policy: &ImagePolicy,
+) -> Result<Fitted, FetchError> {
     let mut response = http.get(url).timeout(FETCH_TIMEOUT).send().await?;
     if !response.status().is_success() {
         return Err(FetchError::Status(response.status().as_u16()));
@@ -180,11 +214,24 @@ async fn fetch_image(
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         bytes.extend_from_slice(&chunk);
-        if bytes.len() > max_bytes {
+        if bytes.len() > policy.max_download_bytes {
             return Err(FetchError::TooLarge);
         }
     }
-    to_outcome(&bytes, max_bytes)
+    let limits = FitLimits {
+        max_edge: policy.max_image_edge,
+        max_bytes: policy.max_image_bytes,
+    };
+    // A panicking decoder is reported like an undecodable image rather than
+    // through a separate variant, since the user-facing outcome is the same.
+    let fitted = tokio::task::spawn_blocking(move || downscale::fit(bytes, &limits))
+        .await
+        .unwrap_or_else(|error| {
+            Err(FitError::Decode(image::ImageError::IoError(
+                std::io::Error::other(error),
+            )))
+        })?;
+    Ok(fitted)
 }
 
 #[cfg(test)]
@@ -233,7 +280,9 @@ mod tests {
             enabled: true,
             max_images: 3,
             recent_messages: 2,
-            max_image_bytes: 1000,
+            max_image_edge: 2048,
+            max_download_bytes: 1000,
+            max_image_bytes: 500,
         }
     }
 
@@ -258,8 +307,8 @@ mod tests {
     }
 
     #[test]
-    fn oversized_images_are_never_selected_and_marked_too_large() {
-        let messages = [message(vec![image(1, 1001), image(2, 1000)])];
+    fn images_over_the_download_limit_are_never_selected_and_marked_too_large() {
+        let messages = [message(vec![image(1, 1001), image(2, 800)])];
         let newest_first: Vec<_> = messages.iter().collect();
 
         let plan = select_images(&newest_first, &policy());
@@ -320,7 +369,11 @@ mod tests {
     #[test]
     fn downloaded_image_is_encoded_as_padded_standard_base64() {
         assert_eq!(
-            to_outcome(PNG, 1000).unwrap(),
+            ImageOutcome::fetched(Fitted {
+                mime: "image/png",
+                bytes: PNG.to_vec(),
+                resized_from: None,
+            }),
             ImageOutcome::Fetched {
                 mime: "image/png",
                 base64: "iVBORw0KGgoAAAANSUhEUg==".to_string(),
@@ -329,12 +382,29 @@ mod tests {
     }
 
     #[test]
-    fn downloaded_bytes_over_the_limit_or_not_an_image_are_rejected() {
-        assert!(matches!(to_outcome(PNG, 4), Err(FetchError::TooLarge)));
-        assert!(matches!(
-            to_outcome(b"<html>", 1000),
-            Err(FetchError::NotAnImage)
-        ));
+    fn fetch_errors_map_to_the_outcome_shown_in_the_context() {
+        assert_eq!(
+            ImageOutcome::from_error(&FetchError::TooLarge),
+            ImageOutcome::TooLarge
+        );
+        assert_eq!(
+            ImageOutcome::from_error(&FetchError::Fit(FitError::TooLarge)),
+            ImageOutcome::TooLarge
+        );
+        assert_eq!(
+            ImageOutcome::from_error(&FetchError::Fit(FitError::NotAnImage)),
+            ImageOutcome::Unreadable
+        );
+        assert_eq!(
+            ImageOutcome::from_error(&FetchError::Fit(FitError::Encode(
+                image::ImageError::IoError(std::io::Error::other("full"))
+            ))),
+            ImageOutcome::Unreadable
+        );
+        assert_eq!(
+            ImageOutcome::from_error(&FetchError::Status(500)),
+            ImageOutcome::DownloadFailed
+        );
     }
 
     /// Downloads `LIVE_IMAGE_URL` (default: a GitHub avatar) and asks
@@ -359,14 +429,24 @@ mod tests {
             .build()
             .unwrap();
 
-        let ImageOutcome::Fetched { mime, base64 } =
-            fetch_image(&http, &url, config.attachments.max_image_bytes)
-                .await
-                .unwrap()
-        else {
-            panic!("not fetched");
+        let policy = ImagePolicy {
+            enabled: true,
+            max_images: config.attachments.max_images,
+            recent_messages: config.attachments.recent_messages,
+            max_image_edge: config.attachments.max_image_edge,
+            max_download_bytes: config.attachments.max_download_bytes,
+            max_image_bytes: config.attachments.max_image_bytes,
         };
-        println!("{mime}, {} base64 chars", base64.len());
+        let fitted = fetch_image(&http, &url, &policy).await.unwrap();
+        println!(
+            "{}, {} bytes, resized_from: {:?}",
+            fitted.mime,
+            fitted.bytes.len(),
+            fitted.resized_from
+        );
+        let ImageOutcome::Fetched { mime, base64 } = ImageOutcome::fetched(fitted) else {
+            unreachable!();
+        };
 
         let model = std::env::var("OPENROUTER_MODEL").unwrap_or(config.llm.model);
         let client = OpenRouterClient::new(

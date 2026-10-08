@@ -14,6 +14,7 @@ base64 = "0.23"
 bytes = "1"
 dotenvy = "0.15"
 envy = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 reqwest = "0.13"
 serde = { version = "1.0", features = ["derive"] }

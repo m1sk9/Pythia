@@ -41,7 +41,12 @@ images = true
 max_images = 4
 ## Only images on this many of the newest user messages are sent.
 recent_messages = 5
-## Larger images are left out with a note.
+## Images whose longest side exceeds this many pixels are downscaled to fit
+## before they are sent. Pythia keeps no state, so this happens every turn.
+max_image_edge = 2048
+## Attachments larger than this are not downloaded and are left out with a note.
+max_download_bytes = 26214400
+## Images still larger than this after downscaling are left out with a note.
 max_image_bytes = 5242880
 
 [tools]

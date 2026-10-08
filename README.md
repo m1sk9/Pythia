@@ -30,7 +30,7 @@ docker pull ghcr.io/m1sk9/pythia:v3.0.0
 - **One thread is one conversation.** Mention Pythia in a channel and it opens a thread from your message and answers there. Keep talking in the thread without mentioning it; it reads the thread history every time, so it keeps no database and survives restarts.
 - **Joins existing threads.** Mention Pythia in any thread and it answers there too, and keeps answering without further mentions.
 - **One answer at a time per thread.** Messages sent while Pythia is answering are covered together by its next answer.
-- **Reads screenshots.** With a model that accepts images, recent PNG / JPEG / WebP / GIF attachments are sent along with the text.
+- **Reads screenshots.** With a model that accepts images, recent PNG / JPEG / WebP / GIF attachments are sent along with the text. Images are downscaled to `attachments.max_image_edge` px on the longest side before they are sent, so large screenshots still fit and cost fewer tokens.
 - **Allow-listed servers only.** Pythia answers only in the guilds listed in `discord.allowed_guilds`.
 - **Powered by [OpenRouter](https://openrouter.ai/).** Any chat model on OpenRouter can be used.
 
@@ -47,7 +47,7 @@ Planned for v3.x:
 - [ ] OpenAI-compatible and Anthropic backends ([#312](https://github.com/m1sk9/Pythia/issues/312))
 - [ ] Cost aggregation per guild ([#314](https://github.com/m1sk9/Pythia/issues/314))
 - [ ] PDF and text file attachments ([#315](https://github.com/m1sk9/Pythia/issues/315))
-- [ ] Downscaling large images ([#316](https://github.com/m1sk9/Pythia/issues/316))
+- [x] Downscaling large images ([#316](https://github.com/m1sk9/Pythia/issues/316))
 
 ## Setup
 
@@ -113,6 +113,7 @@ The image is built on distroless and is published for `linux/amd64` and `linux/a
 - **`llm.model` is required.** Models differ widely in price, so there is no default.
 - **Bounded usage.** At most `limits.max_concurrent` answers are generated at once, each conversation is trimmed to `context.max_chars` characters (newest messages win), and each answer is capped at `llm.max_output_tokens` tokens and `response.max_parts` messages.
 - **Images are opt-out.** Set `attachments.images = false` to send only text. Images are also disabled automatically when the model does not accept them.
+- **Images are bounded.** Attachments over `attachments.max_download_bytes` are never downloaded, every image is downscaled to `attachments.max_image_edge` px on the longest side, and anything still over `attachments.max_image_bytes` after that is left out with a note.
 - **Other bots are ignored**, as are locked threads and system messages.
 
 ## Not supported

@@ -222,6 +222,11 @@ pub struct AttachmentsConfig {
     pub images: bool,
     pub max_images: usize,
     pub recent_messages: usize,
+    /// Images whose longest side exceeds this many pixels are downscaled.
+    pub max_image_edge: u32,
+    /// Attachments larger than this are not downloaded.
+    pub max_download_bytes: usize,
+    /// Images still larger than this after downscaling are left out.
     pub max_image_bytes: usize,
 }
 
@@ -231,6 +236,8 @@ impl Default for AttachmentsConfig {
             images: true,
             max_images: 4,
             recent_messages: 5,
+            max_image_edge: 2048,
+            max_download_bytes: 26_214_400,
             max_image_bytes: 5_242_880,
         }
     }
@@ -392,6 +399,10 @@ impl RawConfig {
             return invalid("`llm.timeout_secs` must be at least 1".to_string());
         }
 
+        if self.attachments.max_image_edge == 0 {
+            return invalid("`attachments.max_image_edge` must be at least 1".to_string());
+        }
+
         if self.limits.max_concurrent == 0 {
             return invalid("`limits.max_concurrent` must be at least 1".to_string());
         }
@@ -519,6 +530,8 @@ mod tests {
         assert!(config.attachments.images);
         assert_eq!(config.attachments.max_images, 4);
         assert_eq!(config.attachments.recent_messages, 5);
+        assert_eq!(config.attachments.max_image_edge, 2048);
+        assert_eq!(config.attachments.max_download_bytes, 26214400);
         assert_eq!(config.attachments.max_image_bytes, 5242880);
         assert!(!config.tools.web_search);
         assert_eq!(config.tools.web_search_engine, None);
@@ -549,6 +562,8 @@ mod tests {
         assert!(config.attachments.images);
         assert_eq!(config.attachments.max_images, 4);
         assert_eq!(config.attachments.recent_messages, 5);
+        assert_eq!(config.attachments.max_image_edge, 2048);
+        assert_eq!(config.attachments.max_download_bytes, 26214400);
         assert_eq!(config.attachments.max_image_bytes, 5242880);
         assert!(!config.tools.web_search);
         assert_eq!(config.tools.web_search_engine, None);
@@ -600,6 +615,13 @@ mod tests {
         let toml = "[llm]\nmodel = \"x\"\n[thread]\ntimezone = \"Mars/Olympus\"";
         let msg = validation_message(toml.parse());
         assert!(msg.contains("thread.timezone"), "{msg}");
+    }
+
+    #[test]
+    fn zero_max_image_edge_is_rejected() {
+        let toml = "[llm]\nmodel = \"x\"\n[attachments]\nmax_image_edge = 0";
+        let msg = validation_message(toml.parse());
+        assert!(msg.contains("attachments.max_image_edge"), "{msg}");
     }
 
     #[test]

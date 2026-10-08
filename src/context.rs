@@ -183,6 +183,9 @@ fn to_entry(
                     Some(ImageOutcome::TooLarge) => {
                         format!("[image: {} (omitted: too large)]", attachment.filename)
                     }
+                    Some(ImageOutcome::Unreadable) => {
+                        format!("[image: {} (omitted: unreadable)]", attachment.filename)
+                    }
                     Some(ImageOutcome::DownloadFailed) => {
                         format!(
                             "[image: {} (omitted: download failed)]",
@@ -472,18 +475,20 @@ mod tests {
         with_images.attachments = vec![
             image_attachment(7, "big.png"),
             image_attachment(8, "broken.png"),
+            image_attachment(10, "corrupt.png"),
             image_attachment(9, "old.png"),
         ];
         let images = HashMap::from([
             (Id::new(7), ImageOutcome::TooLarge),
             (Id::new(8), ImageOutcome::DownloadFailed),
+            (Id::new(10), ImageOutcome::Unreadable),
         ]);
 
         assert_eq!(
             texts(&build_with_images(&[with_images], &images)),
             [(
                 Role::User,
-                "alice: look\n[image: big.png (omitted: too large)]\n[image: broken.png (omitted: download failed)]\n[image: old.png]"
+                "alice: look\n[image: big.png (omitted: too large)]\n[image: broken.png (omitted: download failed)]\n[image: corrupt.png (omitted: unreadable)]\n[image: old.png]"
             )]
         );
     }
