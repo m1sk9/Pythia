@@ -1,6 +1,7 @@
 //! Gateway event loop: receives events from the shard, keeps the cache up to
 //! date, decides which messages start or continue a conversation, and shuts
-//! the connection down on Ctrl-C / SIGTERM.
+//! the connection down on Ctrl-C / SIGTERM. In a thread, a reply to someone
+//! other than the bot does not start a turn unless it mentions the bot.
 
 use crate::{
     context::display_name,
@@ -100,8 +101,21 @@ pub fn is_candidate(message: &Message, bot_id: Id<UserMarker>, allowed_guilds: &
         && matches!(message.kind, MessageType::Regular | MessageType::Reply)
 }
 
+/// Whether the message is a reply to someone other than the bot.
+fn replies_to_someone_else(message: &Message, bot_id: Id<UserMarker>) -> bool {
+    // A reply whose target is gone (`referenced_message` is `None`) does not
+    // count, so that a question to the bot is never dropped.
+    message.kind == MessageType::Reply
+        && message
+            .referenced_message
+            .as_ref()
+            .is_some_and(|target| target.author.id != bot_id)
+}
+
 /// Decides how to respond to a candidate message posted in `channel`.
 /// `registry` is the conversation registry's entry for the channel.
+/// In a thread, a reply to someone other than the bot is ignored unless it
+/// mentions the bot.
 pub fn decide(
     message: &Message,
     bot_id: Id<UserMarker>,
@@ -118,7 +132,7 @@ pub fn decide(
         };
     }
 
-    if channel.locked {
+    if channel.locked || (!mentioned && replies_to_someone_else(message, bot_id)) {
         Trigger::Ignore
     } else if channel.owner_id == Some(bot_id) || registry == Some(true) {
         Trigger::Continue { register: false }
@@ -319,6 +333,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use serde_json::json;
+    use twilight_model::channel::message::{MessageReference, MessageReferenceType};
 
     #[test]
     fn presence_shows_the_text_as_an_online_custom_status() {
@@ -335,6 +350,7 @@ mod tests {
 
     const BOT: u64 = 1000;
     const ALICE: u64 = 2000;
+    const BOB: u64 = 3000;
     const GUILD: u64 = 500;
 
     fn message(content: &str, mentions_bot: bool) -> Message {
@@ -362,6 +378,17 @@ mod tests {
             "type": 0,
         }))
         .unwrap()
+    }
+
+    fn reply(content: &str, mentions_bot: bool, target_author: u64) -> Message {
+        let mut target = message("target", false);
+        target.id = Id::new(9);
+        target.author.id = Id::new(target_author);
+        target.author.bot = target_author == BOT;
+        let mut reply = message(content, mentions_bot);
+        reply.kind = MessageType::Reply;
+        reply.referenced_message = Some(Box::new(target));
+        reply
     }
 
     fn channel(kind: ChannelType) -> ChannelInfo {
@@ -489,6 +516,110 @@ mod tests {
         assert_eq!(
             decide(&message("hi", false), bot(), &thread, Some(false)),
             Trigger::Ignore
+        );
+    }
+
+    fn owned_thread() -> ChannelInfo {
+        let mut owned = channel(ChannelType::PublicThread);
+        owned.owner_id = Some(bot());
+        owned
+    }
+
+    #[test]
+    fn reply_to_another_user_in_a_conversation_is_ignored() {
+        assert_eq!(
+            decide(&reply("hi", false, BOB), bot(), &owned_thread(), None),
+            Trigger::Ignore
+        );
+        assert_eq!(
+            decide(
+                &reply("hi", false, BOB),
+                bot(),
+                &channel(ChannelType::PublicThread),
+                Some(true)
+            ),
+            Trigger::Ignore
+        );
+    }
+
+    #[test]
+    fn reply_to_the_bot_continues() {
+        assert_eq!(
+            decide(&reply("hi", false, BOT), bot(), &owned_thread(), None),
+            Trigger::Continue { register: false }
+        );
+    }
+
+    #[test]
+    fn reply_to_another_user_that_mentions_the_bot_continues() {
+        assert_eq!(
+            decide(&reply("hi", true, BOB), bot(), &owned_thread(), None),
+            Trigger::Continue { register: false }
+        );
+        for registry in [None, Some(false)] {
+            assert_eq!(
+                decide(
+                    &reply("hi", true, BOB),
+                    bot(),
+                    &channel(ChannelType::PublicThread),
+                    registry
+                ),
+                Trigger::Continue { register: true }
+            );
+        }
+    }
+
+    #[test]
+    fn reply_whose_target_is_gone_continues() {
+        let mut orphan = reply("hi", false, BOB);
+        orphan.referenced_message = None;
+
+        assert_eq!(
+            decide(&orphan, bot(), &owned_thread(), None),
+            Trigger::Continue { register: false }
+        );
+    }
+
+    #[test]
+    fn forwarded_message_is_not_treated_as_a_reply() {
+        let mut forwarded = message("", false);
+        forwarded.reference = Some(MessageReference {
+            channel_id: None,
+            guild_id: None,
+            kind: MessageReferenceType::Forward,
+            message_id: Some(Id::new(9)),
+            fail_if_not_exists: None,
+        });
+
+        assert_eq!(
+            decide(&forwarded, bot(), &owned_thread(), None),
+            Trigger::Continue { register: false }
+        );
+    }
+
+    #[test]
+    fn reply_to_another_user_in_an_unchecked_thread_is_ignored() {
+        assert_eq!(
+            decide(
+                &reply("hi", false, BOB),
+                bot(),
+                &channel(ChannelType::PublicThread),
+                None
+            ),
+            Trigger::Ignore
+        );
+    }
+
+    #[test]
+    fn reply_to_another_user_in_a_plain_channel_still_starts_a_thread_when_mentioned() {
+        assert_eq!(
+            decide(
+                &reply("hi", true, BOB),
+                bot(),
+                &channel(ChannelType::GuildText),
+                None
+            ),
+            Trigger::StartThread
         );
     }
 }
