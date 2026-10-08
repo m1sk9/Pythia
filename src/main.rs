@@ -15,7 +15,7 @@ mod thread;
 use crate::attachments::ImagePolicy;
 use crate::config::{EnvConfig, LogFormat, PythiaConfig};
 use crate::llm::{
-    ModelCapabilities,
+    ModelCapabilities, ReasoningEffort,
     openrouter::{self, OpenRouterClient},
 };
 use crate::orchestrator::AppState;
@@ -55,11 +55,12 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|error| {
             tracing::warn!(
                 error = format!("{error:#}"),
-                "failed to look up model capabilities; disabling images and tools"
+                "failed to look up model capabilities; disabling images, tools, and reasoning effort"
             );
             ModelCapabilities {
                 accepts_images: false,
                 accepts_tools: false,
+                reasoning: None,
             }
         });
     let images_enabled = config.attachments.images && capabilities.accepts_images;
@@ -68,10 +69,23 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(model = %config.llm.model, "model does not support tools; disabling them");
         tools.clear();
     }
+    let mut reasoning_effort = config.llm.reasoning_effort;
+    if let Some(effort) = reasoning_effort
+        && let Some(reason) = capabilities.reasoning_effort_problem(effort)
+    {
+        tracing::warn!(
+            model = %config.llm.model,
+            effort = effort.as_str(),
+            reason,
+            "leaving reasoning to the model's default"
+        );
+        reasoning_effort = None;
+    }
     tracing::info!(
         model = %config.llm.model,
         images = images_enabled,
         ?tools,
+        reasoning_effort = reasoning_effort.map(ReasoningEffort::as_str),
         "LLM client ready"
     );
     let llm = OpenRouterClient::new(
@@ -92,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
             max_image_bytes: config.attachments.max_image_bytes,
         },
         tools,
+        reasoning_effort,
         cache: DefaultInMemoryCache::builder()
             .resource_types(ResourceType::CHANNEL)
             .build(),

@@ -4,7 +4,7 @@ use crate::{
     attachments::{self, ImagePolicy},
     config::PythiaConfig,
     context::{self, ContextError, ContextInput},
-    llm::{ChatRequest, ServerTool, openrouter::OpenRouterClient},
+    llm::{ChatRequest, ReasoningEffort, ServerTool, openrouter::OpenRouterClient},
     reply,
     thread::{ConversationRegistry, TurnScheduler},
 };
@@ -35,6 +35,8 @@ pub struct AppState {
     pub images: ImagePolicy,
     /// Server tools sent with every request; empty when disabled.
     pub tools: Vec<ServerTool>,
+    /// Sent with every request; `None` leaves reasoning to the model.
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub cache: DefaultInMemoryCache,
     pub llm: OpenRouterClient,
     pub config: &'static PythiaConfig,
@@ -146,6 +148,7 @@ async fn run_turn(
         messages: built.messages,
         max_output_tokens: state.config.llm.max_output_tokens,
         tools: state.tools.clone(),
+        reasoning_effort: state.reasoning_effort,
     };
     let posted = match state.llm.chat(&request).await {
         Ok(response) => {

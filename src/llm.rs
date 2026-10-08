@@ -79,12 +79,56 @@ pub enum WebFetchEngine {
     Parallel,
 }
 
+/// How much of the output budget the model may spend on reasoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Max,
+    Xhigh,
+    High,
+    Medium,
+    Low,
+    Minimal,
+    None,
+}
+
+impl ReasoningEffort {
+    /// Every effort, in descending order; the names are OpenRouter's.
+    pub const ALL: [Self; 7] = [
+        Self::Max,
+        Self::Xhigh,
+        Self::High,
+        Self::Medium,
+        Self::Low,
+        Self::Minimal,
+        Self::None,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Max => "max",
+            Self::Xhigh => "xhigh",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Minimal => "minimal",
+            Self::None => "none",
+        }
+    }
+
+    /// The effort named exactly `name`, or `None` for anything else (case-sensitive).
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|effort| effort.as_str() == name)
+    }
+}
+
 /// A chat request. The model and system prompt are supplied by the client.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub max_output_tokens: u32,
     pub tools: Vec<ServerTool>,
+    /// `None` leaves reasoning to the model.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// A successful chat completion.
@@ -131,10 +175,43 @@ pub struct Usage {
 }
 
 /// What the configured model accepts as input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCapabilities {
     pub accepts_images: bool,
     pub accepts_tools: bool,
+    /// `None` when the model does not take the `reasoning` parameter.
+    pub reasoning: Option<ReasoningSupport>,
+}
+
+/// How the configured model takes the `reasoning` parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReasoningSupport {
+    /// Efforts the provider lists for the model; `None` when it lists none
+    /// (the effort is then converted to a token budget).
+    pub supported_efforts: Option<Vec<String>>,
+    pub mandatory: bool,
+}
+
+impl ModelCapabilities {
+    /// Why `effort` cannot be sent to this model, or `None` when it can.
+    pub fn reasoning_effort_problem(&self, effort: ReasoningEffort) -> Option<String> {
+        let Some(support) = &self.reasoning else {
+            return Some("model does not support reasoning".to_owned());
+        };
+        if effort == ReasoningEffort::None {
+            // `none` disables reasoning, so it is allowed even when the model
+            // does not list it among its efforts.
+            return support
+                .mandatory
+                .then(|| "reasoning cannot be disabled for this model".to_owned());
+        }
+        match &support.supported_efforts {
+            Some(efforts) if !efforts.iter().any(|name| name == effort.as_str()) => {
+                Some(format!("model supports {}", efforts.join(", ")))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A failed chat request. `retries` is the number of retries made before giving up.
@@ -311,5 +388,65 @@ fn provider_suffix(message: &Option<String>) -> String {
             let ellipsis = if chars.next().is_some() { "…" } else { "" };
             format!(": {head}{ellipsis}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capabilities(reasoning: Option<ReasoningSupport>) -> ModelCapabilities {
+        ModelCapabilities {
+            accepts_images: false,
+            accepts_tools: false,
+            reasoning,
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_names_round_trip() {
+        for effort in ReasoningEffort::ALL {
+            assert_eq!(ReasoningEffort::parse(effort.as_str()), Some(effort));
+        }
+        for name in ["MAX", "foo", ""] {
+            assert_eq!(ReasoningEffort::parse(name), None, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_problem_follows_the_models_reasoning_support() {
+        let unsupported = capabilities(None);
+        for effort in ReasoningEffort::ALL {
+            let problem = unsupported.reasoning_effort_problem(effort).unwrap();
+            assert!(problem.contains("does not support reasoning"), "{problem}");
+        }
+
+        let budget = capabilities(Some(ReasoningSupport::default()));
+        assert_eq!(budget.reasoning_effort_problem(ReasoningEffort::Low), None);
+        assert_eq!(budget.reasoning_effort_problem(ReasoningEffort::None), None);
+
+        let mandatory = capabilities(Some(ReasoningSupport {
+            supported_efforts: None,
+            mandatory: true,
+        }));
+        let problem = mandatory
+            .reasoning_effort_problem(ReasoningEffort::None)
+            .unwrap();
+        assert!(problem.contains("cannot be disabled"), "{problem}");
+        assert_eq!(
+            mandatory.reasoning_effort_problem(ReasoningEffort::Low),
+            None
+        );
+
+        let listed = capabilities(Some(ReasoningSupport {
+            supported_efforts: Some(vec!["max".into(), "high".into(), "low".into()]),
+            mandatory: false,
+        }));
+        assert_eq!(listed.reasoning_effort_problem(ReasoningEffort::High), None);
+        let problem = listed
+            .reasoning_effort_problem(ReasoningEffort::Medium)
+            .unwrap();
+        assert!(problem.contains("max, high, low"), "{problem}");
+        assert_eq!(listed.reasoning_effort_problem(ReasoningEffort::None), None);
     }
 }

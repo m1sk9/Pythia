@@ -4,8 +4,8 @@
 //! retry policy are pure functions so they can be tested without a server.
 
 use super::{
-    ChatRequest, ChatResponse, Citation, Content, Finish, LlmError, ModelCapabilities, Part, Role,
-    ServerTool, Usage, WebFetchEngine, WebSearchEngine,
+    ChatRequest, ChatResponse, Citation, Content, Finish, LlmError, ModelCapabilities, Part,
+    ReasoningSupport, Role, ServerTool, Usage, WebFetchEngine, WebSearchEngine,
 };
 use anyhow::Context as _;
 use bytes::Bytes;
@@ -221,6 +221,13 @@ struct WireRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<WireTool<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<WireReasoning>,
+}
+
+#[derive(Serialize)]
+struct WireReasoning {
+    effort: &'static str,
 }
 
 #[derive(Serialize)]
@@ -368,6 +375,9 @@ fn request_body(model: &str, system_prompt: &str, request: &ChatRequest) -> Vec<
         max_tokens: request.max_output_tokens,
         stream: false,
         tools: request.tools.iter().map(wire_tool).collect(),
+        reasoning: request.reasoning_effort.map(|effort| WireReasoning {
+            effort: effort.as_str(),
+        }),
     };
     serde_json::to_vec(&body).expect("request body contains only strings and integers")
 }
@@ -608,6 +618,14 @@ struct WireModel {
     architecture: Option<WireArchitecture>,
     #[serde(default)]
     supported_parameters: Vec<String>,
+    reasoning: Option<WireModelReasoning>,
+}
+
+#[derive(Deserialize, Default)]
+struct WireModelReasoning {
+    supported_efforts: Option<Vec<String>>,
+    #[serde(default)]
+    mandatory: bool,
 }
 
 #[derive(Deserialize)]
@@ -616,8 +634,8 @@ struct WireArchitecture {
     input_modalities: Vec<String>,
 }
 
-/// Finds `model` in a `/models` body and reads its input modalities and
-/// whether it takes `tools`.
+/// Finds `model` in a `/models` body and reads its input modalities, whether
+/// it takes `tools`, and how it takes `reasoning`.
 ///
 /// Routing variants (`:nitro` etc.) are accepted on any model id but are not
 /// listed, so they are looked up by their base id.
@@ -637,16 +655,29 @@ fn parse_capabilities(body: &[u8], model: &str) -> anyhow::Result<ModelCapabilit
         .architecture
         .is_some_and(|arch| arch.input_modalities.iter().any(|m| m == "image"));
     let accepts_tools = entry.supported_parameters.iter().any(|p| p == "tools");
+    let reasoning = entry
+        .supported_parameters
+        .iter()
+        .any(|p| p == "reasoning")
+        .then(|| {
+            let wire = entry.reasoning.unwrap_or_default();
+            ReasoningSupport {
+                // An empty list would reject every effort.
+                supported_efforts: wire.supported_efforts.filter(|list| !list.is_empty()),
+                mandatory: wire.mandatory,
+            }
+        });
     Ok(ModelCapabilities {
         accepts_images,
         accepts_tools,
+        reasoning,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::ChatMessage;
+    use crate::llm::{ChatMessage, ReasoningEffort};
     use serde_json::{Value, json};
 
     const MODEL: &str = "openai/gpt-4o-mini";
@@ -690,6 +721,7 @@ mod tests {
             ],
             max_output_tokens: 256,
             tools: Vec::new(),
+            reasoning_effort: None,
         };
 
         assert_eq!(
@@ -723,6 +755,7 @@ mod tests {
             ]))],
             max_output_tokens: 256,
             tools: Vec::new(),
+            reasoning_effort: None,
         };
 
         assert_eq!(
@@ -741,8 +774,31 @@ mod tests {
             messages: vec![user(Content::Text("hello".to_string()))],
             max_output_tokens: 256,
             tools: Vec::new(),
+            reasoning_effort: None,
         };
         assert_eq!(body_json(&request).get("tools"), None);
+    }
+
+    #[test]
+    fn request_body_omits_reasoning_when_no_effort_is_set() {
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("hello".to_string()))],
+            max_output_tokens: 256,
+            tools: Vec::new(),
+            reasoning_effort: None,
+        };
+        assert_eq!(body_json(&request).get("reasoning"), None);
+    }
+
+    #[test]
+    fn request_body_sends_the_reasoning_effort() {
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("hello".to_string()))],
+            max_output_tokens: 256,
+            tools: Vec::new(),
+            reasoning_effort: Some(ReasoningEffort::Low),
+        };
+        assert_eq!(body_json(&request)["reasoning"], json!({"effort": "low"}));
     }
 
     #[test]
@@ -767,6 +823,7 @@ mod tests {
                     timezone: "Asia/Tokyo".to_string(),
                 },
             ],
+            reasoning_effort: None,
         };
 
         assert_eq!(
@@ -813,6 +870,7 @@ mod tests {
             messages: vec![user(Content::Text("hello".to_string()))],
             max_output_tokens: 256,
             tools,
+            reasoning_effort: None,
         };
 
         let sent: Vec<Value> = body_json(&request)["tools"]
@@ -1324,6 +1382,44 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_support_follows_supported_parameters_and_the_reasoning_object() {
+        let body = br#"{"data": [
+            {"id": "effort/model", "supported_parameters": ["reasoning"],
+             "reasoning": {"mandatory": true, "supported_efforts": ["high", "medium", "low"], "default_effort": "medium"}},
+            {"id": "budget/model", "supported_parameters": ["reasoning"], "reasoning": {"mandatory": false}},
+            {"id": "router/model", "supported_parameters": ["reasoning"]},
+            {"id": "empty/model", "supported_parameters": ["reasoning"],
+             "reasoning": {"supported_efforts": [], "mandatory": false}},
+            {"id": "plain/model", "supported_parameters": ["max_tokens"], "reasoning": {"mandatory": false}}
+        ]}"#;
+        let reasoning = |model| parse_capabilities(body, model).unwrap().reasoning;
+
+        assert_eq!(
+            reasoning("effort/model"),
+            Some(ReasoningSupport {
+                supported_efforts: Some(vec!["high".into(), "medium".into(), "low".into()]),
+                mandatory: true,
+            })
+        );
+        assert_eq!(
+            reasoning("budget/model"),
+            Some(ReasoningSupport {
+                supported_efforts: None,
+                mandatory: false,
+            })
+        );
+        assert_eq!(reasoning("router/model"), Some(ReasoningSupport::default()));
+        assert_eq!(
+            reasoning("empty/model"),
+            Some(ReasoningSupport {
+                supported_efforts: None,
+                mandatory: false,
+            })
+        );
+        assert_eq!(reasoning("plain/model"), None);
+    }
+
+    #[test]
     fn routing_variant_uses_the_capabilities_of_its_base_model() {
         let body = br#"{"data": [
             {"id": "vision/model", "architecture": {"input_modalities": ["text", "image"]}},
@@ -1356,6 +1452,7 @@ mod tests {
             messages: vec![user(Content::Text("ping".to_string()))],
             max_output_tokens: 32,
             tools: Vec::new(),
+            reasoning_effort: None,
         };
         println!("{:#?}", client.chat(&request).await.unwrap());
     }
@@ -1390,8 +1487,33 @@ mod tests {
                     timezone: "Asia/Tokyo".to_string(),
                 },
             ],
+            reasoning_effort: None,
         };
         println!("{:#?}", client.chat(&request).await.unwrap());
+    }
+
+    /// Manual check of the reasoning effort:
+    /// `cargo test live_reasoning_effort -- --ignored --nocapture`.
+    /// `OPENROUTER_REASONING_EFFORT` defaults to `low`. Errors are printed rather
+    /// than unwrapped so that models without reasoning can be probed too.
+    #[tokio::test]
+    #[ignore = "calls the live OpenRouter API"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    async fn live_reasoning_effort() {
+        let (http, api_key, model) = live_setup();
+        let name = std::env::var("OPENROUTER_REASONING_EFFORT").unwrap_or_else(|_| "low".into());
+        let effort = ReasoningEffort::parse(&name).expect("OPENROUTER_REASONING_EFFORT");
+
+        println!("{:#?}", fetch_capabilities(&http, &model).await);
+        let client =
+            OpenRouterClient::new(http, api_key, model, "Reply with one word.".to_string(), 2);
+        let request = ChatRequest {
+            messages: vec![user(Content::Text("ping".to_string()))],
+            max_output_tokens: 1024,
+            tools: Vec::new(),
+            reasoning_effort: Some(effort),
+        };
+        println!("{:#?}", client.chat(&request).await);
     }
 
     /// Reads `OPENROUTER_API_KEY` from the environment or `.env`; the model is

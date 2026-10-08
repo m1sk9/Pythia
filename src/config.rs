@@ -3,7 +3,7 @@
 //! Secrets come from environment variables ([`EnvConfig`]); everything else
 //! comes from the TOML file pointed to by `CONFIG_FILE_PATH` ([`PythiaConfig`]).
 
-use crate::llm::{ServerTool, WebFetchEngine, WebSearchEngine};
+use crate::llm::{ReasoningEffort, ServerTool, WebFetchEngine, WebSearchEngine};
 use serde::Deserialize;
 use std::{path::PathBuf, str::FromStr, sync::OnceLock};
 
@@ -146,6 +146,7 @@ struct RawLlmConfig {
     max_output_tokens: u32,
     timeout_secs: u64,
     max_retries: u32,
+    reasoning_effort: Option<String>,
 }
 
 impl Default for RawLlmConfig {
@@ -158,6 +159,7 @@ impl Default for RawLlmConfig {
             max_output_tokens: 4096,
             timeout_secs: 120,
             max_retries: 2,
+            reasoning_effort: None,
         }
     }
 }
@@ -180,6 +182,8 @@ pub struct LlmConfig {
     pub timeout_secs: u64,
     /// Retries apply to 429 / 5xx / connection errors only.
     pub max_retries: u32,
+    /// Left to the model when unset.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Conversation context configuration.
@@ -392,6 +396,19 @@ impl RawConfig {
             return invalid("`llm.timeout_secs` must be at least 1".to_string());
         }
 
+        let reasoning_effort = match llm.reasoning_effort.as_deref() {
+            None => None,
+            Some(value) => match ReasoningEffort::parse(value) {
+                Some(effort) => Some(effort),
+                None => {
+                    return invalid(format!(
+                        "`llm.reasoning_effort` `{value}` is not one of {}",
+                        ReasoningEffort::ALL.map(ReasoningEffort::as_str).join(", ")
+                    ));
+                }
+            },
+        };
+
         if self.limits.max_concurrent == 0 {
             return invalid("`limits.max_concurrent` must be at least 1".to_string());
         }
@@ -437,6 +454,7 @@ impl RawConfig {
                 max_output_tokens: llm.max_output_tokens,
                 timeout_secs: llm.timeout_secs,
                 max_retries: llm.max_retries,
+                reasoning_effort,
             },
             context: self.context,
             response: self.response,
@@ -517,6 +535,7 @@ mod tests {
         assert_eq!(config.llm.max_output_tokens, 4096);
         assert_eq!(config.llm.timeout_secs, 120);
         assert_eq!(config.llm.max_retries, 2);
+        assert_eq!(config.llm.reasoning_effort, None);
         assert_eq!(config.context.max_messages, 100);
         assert_eq!(config.context.max_chars, 32000);
         assert_eq!(config.response.max_parts, 5);
@@ -547,6 +566,7 @@ mod tests {
         assert_eq!(config.llm.max_output_tokens, 4096);
         assert_eq!(config.llm.timeout_secs, 120);
         assert_eq!(config.llm.max_retries, 2);
+        assert_eq!(config.llm.reasoning_effort, None);
         assert_eq!(config.context.max_messages, 100);
         assert_eq!(config.context.max_chars, 32000);
         assert_eq!(config.response.max_parts, 5);
@@ -641,6 +661,28 @@ mod tests {
         let toml = "[llm]\nmodel = \"x\"\ntimeout_secs = 0";
         let msg = validation_message(toml.parse());
         assert!(msg.contains("llm.timeout_secs"), "{msg}");
+    }
+
+    #[test]
+    fn reasoning_effort_parses_every_documented_value() {
+        for effort in ReasoningEffort::ALL {
+            let toml = format!(
+                "[llm]\nmodel = \"x\"\nreasoning_effort = \"{}\"",
+                effort.as_str()
+            );
+            let config: PythiaConfig = toml.parse().unwrap();
+            assert_eq!(config.llm.reasoning_effort, Some(effort));
+        }
+    }
+
+    #[test]
+    fn unknown_reasoning_effort_error_names_the_key_and_the_choices() {
+        for value in ["maximum", ""] {
+            let toml = format!("[llm]\nmodel = \"x\"\nreasoning_effort = \"{value}\"");
+            let msg = validation_message(toml.parse());
+            assert!(msg.contains("llm.reasoning_effort"), "{msg}");
+            assert!(msg.contains("minimal"), "{msg}");
+        }
     }
 
     #[test]
