@@ -113,7 +113,7 @@ The image is built on distroless and is published for `linux/amd64` and `linux/a
 - **`llm.model` is required.** Models differ widely in price, so there is no default.
 - **Bounded usage.** At most `limits.max_concurrent` answers are generated at once, each conversation is trimmed to `context.max_chars` characters (newest messages win), and each answer is capped at `llm.max_output_tokens` tokens and `response.max_parts` messages.
 - **Images are opt-out.** Set `attachments.images = false` to send only text. Images are also disabled automatically when the model does not accept them.
-- **Images are bounded.** Attachments over `attachments.max_download_bytes` are never downloaded, every image is downscaled to `attachments.max_image_edge` px on the longest side, and anything still over `attachments.max_image_bytes` after that is left out with a note.
+- **Images are bounded.** Attachments over `attachments.max_download_bytes` are never downloaded, every image is downscaled to `attachments.max_image_edge` px on the longest side, and anything whose base64 is still over `attachments.max_image_bytes` after that is left out with a note.
 - **Other bots are ignored**, as are locked threads and system messages.
 
 ## Not supported

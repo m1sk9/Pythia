@@ -17,6 +17,7 @@ const MAX_SHRINK_STEPS: u32 = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FitLimits {
     pub max_edge: u32,
+    /// Measured on the base64 payload, which is what providers limit.
     pub max_bytes: usize,
 }
 
@@ -61,7 +62,7 @@ pub fn fit(bytes: Vec<u8>, limits: &FitLimits) -> Result<Fitted, FitError> {
     // An unreadable EXIF chunk only loses the rotation; the pixels still decode.
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     if width.max(height) <= limits.max_edge
-        && bytes.len() <= limits.max_bytes
+        && base64_len(bytes.len()) <= limits.max_bytes
         && orientation == Orientation::NoTransforms
     {
         drop(decoder);
@@ -148,7 +149,7 @@ fn encode(
             .write_to(&mut png, ImageFormat::Png)
             .map_err(FitError::Encode)?;
         let png = png.into_inner();
-        if png.len() <= max_bytes {
+        if base64_len(png.len()) <= max_bytes {
             return Ok(Some(("image/png", png)));
         }
     }
@@ -157,7 +158,12 @@ fn encode(
         .write_with_encoder(JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY))
         .map_err(FitError::Encode)?;
     let jpeg = jpeg.into_inner();
-    Ok((jpeg.len() <= max_bytes).then_some(("image/jpeg", jpeg)))
+    Ok((base64_len(jpeg.len()) <= max_bytes).then_some(("image/jpeg", jpeg)))
+}
+
+/// Length of the padded base64 encoding of `len` bytes.
+fn base64_len(len: usize) -> usize {
+    len.div_ceil(3) * 4
 }
 
 /// JPEG has no alpha, and `to_rgb8` alone would show transparent pixels in
@@ -278,15 +284,37 @@ mod tests {
     fn png_over_the_byte_limit_falls_back_to_jpeg() {
         let png = encoded(noise(), ImageFormat::Png);
         let limits = FitLimits {
-            max_bytes: png.len() - 1,
+            max_bytes: base64_len(png.len()) - 1,
             ..ROOMY
         };
 
         let fitted = fit(png, &limits).unwrap();
 
         assert_eq!(fitted.mime, "image/jpeg");
-        assert!(fitted.bytes.len() <= limits.max_bytes);
+        assert!(base64_len(fitted.bytes.len()) <= limits.max_bytes);
         assert_eq!(dimensions(&fitted.bytes), (256, 256));
+    }
+
+    #[test]
+    fn the_byte_limit_applies_to_the_base64_payload() {
+        let png = encoded(noise(), ImageFormat::Png);
+        let limits = FitLimits {
+            max_bytes: png.len(),
+            ..ROOMY
+        };
+
+        let fitted = fit(png, &limits).unwrap();
+
+        assert_eq!(fitted.mime, "image/jpeg");
+        assert!(base64_len(fitted.bytes.len()) <= limits.max_bytes);
+    }
+
+    #[test]
+    fn base64_length_counts_padding() {
+        assert_eq!(base64_len(0), 0);
+        assert_eq!(base64_len(1), 4);
+        assert_eq!(base64_len(3), 4);
+        assert_eq!(base64_len(4), 8);
     }
 
     #[test]
@@ -298,7 +326,7 @@ mod tests {
         }));
         let png = encoded(half_transparent, ImageFormat::Png);
         let limits = FitLimits {
-            max_bytes: png.len() - 1,
+            max_bytes: base64_len(png.len()) - 1,
             ..ROOMY
         };
 

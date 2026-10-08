@@ -33,7 +33,7 @@ pub struct ImagePolicy {
     pub max_image_edge: u32,
     /// Attachments larger than this are never downloaded.
     pub max_download_bytes: usize,
-    /// Images still larger than this after downscaling are left out.
+    /// Images whose base64 is still larger than this after downscaling are left out.
     pub max_image_bytes: usize,
 }
 

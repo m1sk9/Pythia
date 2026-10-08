@@ -47,6 +47,7 @@ max_image_edge = 2048
 ## Attachments larger than this are not downloaded and are left out with a note.
 max_download_bytes = 26214400
 ## Images still larger than this after downscaling are left out with a note.
+## Measured after base64 encoding (about 4/3 of the file size), as providers do.
 max_image_bytes = 5242880
 
 [tools]
