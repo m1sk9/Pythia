@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.2.0](https://github.com/m1sk9/Pythia/compare/v3.1.0...v3.2.0) (2026-10-08)
+
+
+### Features
+
+* Ignore replies to other users in conversation threads ([#337](https://github.com/m1sk9/Pythia/issues/337)) ([c3624ba](https://github.com/m1sk9/Pythia/commit/c3624baa82ee5620fe84b983b441501037b5e278))
+* Show the model, version, or a custom text as Pythia's status ([#326](https://github.com/m1sk9/Pythia/issues/326)) ([a8c6714](https://github.com/m1sk9/Pythia/commit/a8c6714ef7b987e78a62a583df7eb94d4822a0e3))
+
+
+### Bug Fixes
+
+* Keep labels and attachment lines on truncation, start the context with a user turn, and rejoin split answers ([#334](https://github.com/m1sk9/Pythia/issues/334)) ([e6a003e](https://github.com/m1sk9/Pythia/commit/e6a003e522a947173d468d4dc5fde0e57443601a))
+
+
+### Miscellaneous
+
+* **deps:** update rust crate jiff to v0.2.38 ([#323](https://github.com/m1sk9/Pythia/issues/323)) ([cea1737](https://github.com/m1sk9/Pythia/commit/cea17373c68c14bcd964bad5a8143b6d9be06bb5))
+* **deps:** update rust crate toml to v1.1.7 ([#325](https://github.com/m1sk9/Pythia/issues/325)) ([46d70b1](https://github.com/m1sk9/Pythia/commit/46d70b10686c28838d34e79fb7daf8e86f935c0b))
+
 ## [3.1.0](https://github.com/m1sk9/Pythia/compare/v3.0.0...v3.1.0) (2026-10-06)
 
 
