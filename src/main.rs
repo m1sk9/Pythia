@@ -111,6 +111,8 @@ async fn main() -> anyhow::Result<()> {
             enabled: images_enabled,
             max_images: config.attachments.max_images,
             recent_messages: config.attachments.recent_messages,
+            max_image_edge: config.attachments.max_image_edge,
+            max_download_bytes: config.attachments.max_download_bytes,
             max_image_bytes: config.attachments.max_image_bytes,
         },
         tools,

@@ -116,7 +116,7 @@ async fn run_turn(
 
     let user_messages = context::user_messages_newest_first(&history, starter.as_ref(), bot_id);
     let plan = attachments::select_images(&user_messages, &state.images);
-    let images = attachments::fetch_images(&state.web, &plan, state.images.max_image_bytes).await;
+    let images = attachments::fetch_images(&state.web, &plan, &state.images).await;
     tracing::debug!(
         selected = plan.fetch.len(),
         too_large = plan.too_large.len(),
