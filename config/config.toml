@@ -5,6 +5,11 @@
 [discord]
 ## Guilds where Pythia responds. Empty means nowhere.
 allowed_guilds = [123456789012345678]
+## Pythia's custom status, set at startup: "model" (llm.model),
+## "version" ("Running v3.x.y"), "custom" (activity_custom), or "disabled".
+activity_display = "model"
+## Required when activity_display = "custom". At most 128 characters.
+# activity_custom = "Running!"
 
 [llm]
 ## v3.0.0 supports OpenRouter only.
