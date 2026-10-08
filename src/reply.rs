@@ -188,10 +188,11 @@ pub fn without_cut_note(part: &str) -> &str {
 /// reopened at the start of `part` becomes one block again. The separator the
 /// split removed is unknown, so parts are joined with `\n`.
 pub fn append_part(answer: &mut String, part: &str) {
-    // A block the model closed itself, followed by a new answer that opens
-    // one, also matches; telling them apart is impossible from the posts and
-    // two answers only merge when no user message between them survives
-    // filtering.
+    // A block the model closed itself, followed by one it opened with the
+    // same or no info string, also matches: when the split falls between two
+    // such blocks of one answer, or when two answers merge because no user
+    // message between them survives filtering. The posts alone cannot tell
+    // these from a block reopened by the split.
     let reopened = answer.strip_suffix(CLOSE_FENCE).and_then(|before| {
         let open = open_fence_info(before)?;
         let (info, tail) = part.strip_prefix(FENCE)?.split_once('\n')?;

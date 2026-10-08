@@ -75,8 +75,17 @@ impl Entry {
         format!("{}{}", self.label, body.join("\n"))
     }
 
+    /// The length of [`Entry::text`], without building it.
     fn chars(&self) -> usize {
-        self.text().chars().count()
+        let lines = usize::from(!self.content.is_empty()) + self.attachments.len();
+        self.label.chars().count()
+            + self.content.chars().count()
+            + self
+                .attachments
+                .iter()
+                .map(|line| line.chars().count())
+                .sum::<usize>()
+            + lines.saturating_sub(1)
     }
 }
 
@@ -170,7 +179,6 @@ fn to_entry(
     }
 
     if author.id == bot_id {
-        // The cut note follows the footer, so it has to go first.
         let text = without_footer(without_cut_note(&message.content));
         return (!text.is_empty()).then(|| Entry {
             role: Role::Assistant,
@@ -235,8 +243,10 @@ fn trim_to_budget(mut entries: Vec<Entry>, max_chars: usize) -> Vec<Entry> {
     // them the model loses who spoke and which images are whose.
     let room = max_chars.saturating_sub(newest_chars - content_chars);
     if content_chars > room {
-        newest.content = newest.content.chars().take(room).collect();
-        newest.content.push_str(TRUNCATION_MARKER);
+        let kept: String = newest.content.chars().take(room).collect();
+        newest.content = format!("{kept}{TRUNCATION_MARKER}")
+            .trim_start()
+            .to_string();
     }
 
     let mut used = newest_chars.min(max_chars);
@@ -893,6 +903,19 @@ mod tests {
         let context = build_with_budget(&history, None, 10).unwrap();
 
         assert_eq!(texts(&context), [(Role::User, "alice: [image: shot.png]")]);
+    }
+
+    #[test]
+    fn content_cut_entirely_leaves_only_the_marker_after_the_label() {
+        let mut with_image = message(1, ALICE, "question");
+        with_image.attachments = vec![image_attachment(7, "shot.png")];
+
+        let context = build_with_budget(&[with_image], None, 10).unwrap();
+
+        assert_eq!(
+            texts(&context),
+            [(Role::User, "alice: …(truncated)\n[image: shot.png]")]
+        );
     }
 
     #[test]
