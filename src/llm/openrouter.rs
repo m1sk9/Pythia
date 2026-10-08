@@ -228,6 +228,8 @@ struct WireRequest<'a> {
 #[derive(Serialize)]
 struct WireReasoning {
     effort: &'static str,
+    // Pythia never reads the reasoning text; it is billed either way.
+    exclude: bool,
 }
 
 #[derive(Serialize)]
@@ -377,6 +379,7 @@ fn request_body(model: &str, system_prompt: &str, request: &ChatRequest) -> Vec<
         tools: request.tools.iter().map(wire_tool).collect(),
         reasoning: request.reasoning_effort.map(|effort| WireReasoning {
             effort: effort.as_str(),
+            exclude: true,
         }),
     };
     serde_json::to_vec(&body).expect("request body contains only strings and integers")
@@ -796,14 +799,17 @@ mod tests {
     }
 
     #[test]
-    fn request_body_sends_the_reasoning_effort() {
+    fn request_body_sends_the_reasoning_effort_without_asking_for_the_reasoning_text() {
         let request = ChatRequest {
             messages: vec![user(Content::Text("hello".to_string()))],
             max_output_tokens: 256,
             tools: Vec::new(),
             reasoning_effort: Some(ReasoningEffort::Low),
         };
-        assert_eq!(body_json(&request)["reasoning"], json!({"effort": "low"}));
+        assert_eq!(
+            body_json(&request)["reasoning"],
+            json!({"effort": "low", "exclude": true})
+        );
     }
 
     #[test]
