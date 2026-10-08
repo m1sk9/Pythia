@@ -6,7 +6,7 @@
 use crate::{
     attachments::ImageOutcome,
     llm::{ChatMessage, Content, Part, Role},
-    reply::without_footer,
+    reply::{append_part, without_cut_note, without_footer},
 };
 use std::collections::HashMap;
 use twilight_model::{
@@ -55,9 +55,29 @@ pub enum ContextError {
 /// A message after filtering, before trimming.
 struct Entry {
     role: Role,
-    text: String,
+    /// `"{display_name}: "` on user messages; the bot's own answers have none.
+    label: String,
+    content: String,
+    /// `[image: …]` / `[attachment: …]` lines, rendered after the content.
+    attachments: Vec<String>,
     images: Vec<Part>,
     id: Id<MessageMarker>,
+}
+
+impl Entry {
+    /// The label and the content, followed by one line per attachment.
+    fn text(&self) -> String {
+        let body: Vec<&str> = (!self.content.is_empty())
+            .then_some(self.content.as_str())
+            .into_iter()
+            .chain(self.attachments.iter().map(String::as_str))
+            .collect();
+        format!("{}{}", self.label, body.join("\n"))
+    }
+
+    fn chars(&self) -> usize {
+        self.text().chars().count()
+    }
 }
 
 /// The starter (unless the history already has it) followed by the history, oldest first.
@@ -102,8 +122,7 @@ pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextErr
         };
         match entries.last_mut() {
             Some(last) if last.role == Role::Assistant && entry.role == Role::Assistant => {
-                last.text.push('\n');
-                last.text.push_str(&entry.text);
+                append_part(&mut last.content, &entry.content);
             }
             _ => entries.push(entry),
         }
@@ -122,10 +141,10 @@ pub fn build_context(input: ContextInput<'_>) -> Result<BuiltContext, ContextErr
             .map(|entry| ChatMessage {
                 role: entry.role,
                 content: if entry.images.is_empty() {
-                    Content::Text(entry.text)
+                    Content::Text(entry.text())
                 } else {
                     Content::Parts(
-                        std::iter::once(Part::Text(entry.text))
+                        std::iter::once(Part::Text(entry.text()))
                             .chain(entry.images)
                             .collect(),
                     )
@@ -151,10 +170,13 @@ fn to_entry(
     }
 
     if author.id == bot_id {
-        let text = without_footer(&message.content);
+        // The cut note follows the footer, so it has to go first.
+        let text = without_footer(without_cut_note(&message.content));
         return (!text.is_empty()).then(|| Entry {
             role: Role::Assistant,
-            text: text.to_string(),
+            label: String::new(),
+            content: text.to_string(),
+            attachments: Vec::new(),
             images: Vec::new(),
             id: message.id,
         });
@@ -165,57 +187,62 @@ fn to_entry(
         return None;
     }
     let mut parts = Vec::new();
-    let body: Vec<String> = (!content.is_empty())
-        .then_some(content)
-        .into_iter()
-        .chain(
-            message
-                .attachments
-                .iter()
-                .map(|attachment| match images.get(&attachment.id) {
-                    Some(ImageOutcome::Fetched { mime, base64 }) => {
-                        parts.push(Part::ImageDataUrl {
-                            mime: (*mime).to_string(),
-                            base64: base64.clone(),
-                        });
-                        attachment_placeholder(attachment)
-                    }
-                    Some(ImageOutcome::TooLarge) => {
-                        format!("[image: {} (omitted: too large)]", attachment.filename)
-                    }
-                    Some(ImageOutcome::DownloadFailed) => {
-                        format!(
-                            "[image: {} (omitted: download failed)]",
-                            attachment.filename
-                        )
-                    }
-                    None => attachment_placeholder(attachment),
-                }),
-        )
+    let attachments = message
+        .attachments
+        .iter()
+        .map(|attachment| match images.get(&attachment.id) {
+            Some(ImageOutcome::Fetched { mime, base64 }) => {
+                parts.push(Part::ImageDataUrl {
+                    mime: (*mime).to_string(),
+                    base64: base64.clone(),
+                });
+                attachment_placeholder(attachment)
+            }
+            Some(ImageOutcome::TooLarge) => {
+                format!("[image: {} (omitted: too large)]", attachment.filename)
+            }
+            Some(ImageOutcome::DownloadFailed) => {
+                format!(
+                    "[image: {} (omitted: download failed)]",
+                    attachment.filename
+                )
+            }
+            None => attachment_placeholder(attachment),
+        })
         .collect();
     Some(Entry {
         role: Role::User,
-        text: format!("{}: {}", display_name(message), body.join("\n")),
+        label: format!("{}: ", display_name(message)),
+        content,
+        attachments,
         images: parts,
         id: message.id,
     })
 }
 
-/// Keeps the newest entries that fit in `max_chars`, oldest first.
+/// Keeps the newest entries that fit in `max_chars`, oldest first and
+/// starting with a user message, since some providers reject a conversation
+/// that starts with the assistant. Only the content of the newest entry is
+/// cut; its label and attachment lines are always kept.
 fn trim_to_budget(mut entries: Vec<Entry>, max_chars: usize) -> Vec<Entry> {
     let Some(mut newest) = entries.pop() else {
         return entries;
     };
-    let newest_chars = newest.text.chars().count();
-    if newest_chars > max_chars {
-        newest.text = newest.text.chars().take(max_chars).collect();
-        newest.text.push_str(TRUNCATION_MARKER);
+    let newest_chars = newest.chars();
+    let content_chars = newest.content.chars().count();
+    // The label and attachment lines are kept even when they alone go over
+    // the budget: Discord caps both, so the excess is bounded, and without
+    // them the model loses who spoke and which images are whose.
+    let room = max_chars.saturating_sub(newest_chars - content_chars);
+    if content_chars > room {
+        newest.content = newest.content.chars().take(room).collect();
+        newest.content.push_str(TRUNCATION_MARKER);
     }
 
     let mut used = newest_chars.min(max_chars);
     let mut kept = vec![newest];
     while let Some(entry) = entries.pop() {
-        let chars = entry.text.chars().count();
+        let chars = entry.chars();
         if used + chars > max_chars {
             break;
         }
@@ -223,6 +250,11 @@ fn trim_to_budget(mut entries: Vec<Entry>, max_chars: usize) -> Vec<Entry> {
         kept.push(entry);
     }
     kept.reverse();
+    let first_user = kept
+        .iter()
+        .position(|entry| entry.role == Role::User)
+        .unwrap_or(0);
+    kept.drain(..first_user);
     kept
 }
 
@@ -817,6 +849,53 @@ mod tests {
     }
 
     #[test]
+    fn truncation_keeps_the_speaker_label_and_attachment_lines() {
+        let mut long = message(1, ALICE, &"x".repeat(100));
+        long.attachments = vec![image_attachment(7, "shot.png")];
+        let images = HashMap::from([(
+            Id::new(7),
+            ImageOutcome::Fetched {
+                mime: "image/png",
+                base64: "AAAA".to_string(),
+            },
+        )]);
+
+        let context = build_context(ContextInput {
+            history_newest_first: &[long],
+            starter: None,
+            bot_id: Id::new(BOT),
+            max_chars: 30,
+            images: &images,
+        })
+        .unwrap();
+
+        assert_eq!(
+            context.messages,
+            [ChatMessage {
+                role: Role::User,
+                content: Content::Parts(vec![
+                    Part::Text("alice: xxxxx …(truncated)\n[image: shot.png]".to_string()),
+                    Part::ImageDataUrl {
+                        mime: "image/png".to_string(),
+                        base64: "AAAA".to_string(),
+                    },
+                ]),
+            }]
+        );
+    }
+
+    #[test]
+    fn attachment_only_message_over_the_budget_is_not_marked_truncated() {
+        let mut images_only = message(2, ALICE, "");
+        images_only.attachments = vec![image_attachment(7, "shot.png")];
+        let history = [images_only, message(1, ALICE, "old")];
+
+        let context = build_with_budget(&history, None, 10).unwrap();
+
+        assert_eq!(texts(&context), [(Role::User, "alice: [image: shot.png]")]);
+    }
+
+    #[test]
     fn history_without_user_messages_has_nothing_to_answer() {
         let history = [message(2, BOT, "a"), message(1, BOT, "b")];
 
@@ -847,16 +926,81 @@ mod tests {
     #[test]
     fn bot_messages_after_the_newest_user_message_are_not_sent() {
         let history = [
-            message(3, BOT, "answer"),
-            message(2, ALICE, "question"),
-            message(1, BOT, "greeting"),
+            message(4, BOT, "answer"),
+            message(3, ALICE, "question"),
+            message(2, BOT, "greeting"),
+            message(1, ALICE, "hello"),
         ];
 
         assert_eq!(
             texts(&build(&history, None)),
             [
+                (Role::User, "alice: hello"),
                 (Role::Assistant, "greeting"),
                 (Role::User, "alice: question"),
+            ]
+        );
+    }
+
+    #[test]
+    fn trimmed_conversation_starts_with_a_user_message() {
+        let history = [
+            message(3, ALICE, "q2"),
+            message(2, BOT, "a1"),
+            message(1, ALICE, "q1"),
+        ];
+        let without_the_first_question = "alice: q2".chars().count() + "a1".chars().count();
+
+        let context = build_with_budget(&history, None, without_the_first_question).unwrap();
+
+        assert_eq!(texts(&context), [(Role::User, "alice: q2")]);
+        assert_eq!(context.reply_to, Id::new(3));
+    }
+
+    #[test]
+    fn split_bot_answer_is_sent_as_one_assistant_message() {
+        let code: String = (0..300).map(|i| format!("let x{i} = {i};\n")).collect();
+        let answer = format!("Here:\n```rust\n{code}```\nDone.");
+        let parts = crate::reply::split_message(&answer, 2000);
+        assert!(parts.len() > 1);
+        let mut history = vec![message(100, ALICE, "thanks")];
+        history.extend(
+            parts
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(i, part)| message(10 + i as u64, BOT, part)),
+        );
+        history.push(message(1, ALICE, "show me code"));
+
+        assert_eq!(
+            texts(&build(&history, None)),
+            [
+                (Role::User, "alice: show me code"),
+                (Role::Assistant, answer.as_str()),
+                (Role::User, "alice: thanks"),
+            ]
+        );
+    }
+
+    #[test]
+    fn max_parts_cut_note_under_a_bot_answer_is_not_sent() {
+        let history = [
+            message(3, ALICE, "next"),
+            message(
+                2,
+                BOT,
+                "answer\n\n(response truncated: too long for Discord)",
+            ),
+            message(1, ALICE, "q"),
+        ];
+
+        assert_eq!(
+            texts(&build(&history, None)),
+            [
+                (Role::User, "alice: q"),
+                (Role::Assistant, "answer"),
+                (Role::User, "alice: next"),
             ]
         );
     }

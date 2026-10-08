@@ -177,6 +177,40 @@ pub fn without_footer(content: &str) -> &str {
     start.map_or(content, |i| content[..i].trim_end())
 }
 
+/// A posted part of an answer without the note that [`answer_parts`] adds
+/// when `response.max_parts` cuts the answer. The note is Pythia's, not the model's.
+pub fn without_cut_note(part: &str) -> &str {
+    part.strip_suffix(RESPONSE_TRUNCATED_NOTE).unwrap_or(part)
+}
+
+/// Appends the next posted part of the same answer to `answer`, undoing what
+/// [`split_message`] added: a code block closed at the end of `answer` and
+/// reopened at the start of `part` becomes one block again. The separator the
+/// split removed is unknown, so parts are joined with `\n`.
+pub fn append_part(answer: &mut String, part: &str) {
+    // A block the model closed itself, followed by a new answer that opens
+    // one, also matches; telling them apart is impossible from the posts and
+    // two answers only merge when no user message between them survives
+    // filtering.
+    let reopened = answer.strip_suffix(CLOSE_FENCE).and_then(|before| {
+        let open = open_fence_info(before)?;
+        let (info, tail) = part.strip_prefix(FENCE)?.split_once('\n')?;
+        let info = info.trim();
+        (info == open || info.is_empty()).then_some((before.len(), tail))
+    });
+    match reopened {
+        Some((end, tail)) => {
+            answer.truncate(end);
+            answer.push('\n');
+            answer.push_str(tail);
+        }
+        None => {
+            answer.push('\n');
+            answer.push_str(part);
+        }
+    }
+}
+
 /// A small-text list of the first [`MAX_SOURCES`] http(s) citations, linked
 /// in angle brackets so that Discord does not embed every page.
 fn sources_list(citations: &[Citation]) -> Option<String> {
@@ -632,6 +666,69 @@ mod tests {
     fn answer_without_a_footer_is_kept_whole() {
         let text = "intro\n\n-# small print the model wrote\n\nend";
         assert_eq!(without_footer(text), text);
+    }
+
+    fn rejoin(parts: &[String]) -> String {
+        let (first, rest) = parts.split_first().unwrap();
+        rest.iter().fold(first.clone(), |mut answer, part| {
+            append_part(&mut answer, part);
+            answer
+        })
+    }
+
+    #[test]
+    fn parts_split_at_line_breaks_rejoin_to_the_original_answer() {
+        let text = vec!["a".repeat(100); 60].join("\n");
+
+        let parts = split_message(&text, 2000);
+
+        assert!(parts.len() > 1);
+        assert_eq!(rejoin(&parts), text);
+    }
+
+    #[test]
+    fn parts_split_inside_a_code_block_rejoin_without_the_reopened_fence() {
+        let code: String = (0..300).map(|i| format!("let x{i} = {i};\n")).collect();
+        for info in ["rust", "a-very-long-info-string-over-32-chars"] {
+            let text = format!("Here:\n```{info}\n{code}```\nDone.");
+
+            let parts = split_message(&text, 2000);
+
+            assert!(parts.len() > 1);
+            assert_eq!(rejoin(&parts), text);
+        }
+    }
+
+    #[test]
+    fn parts_split_at_a_paragraph_break_rejoin_with_a_single_line_break() {
+        let text = format!(
+            "{}\n\n{}\n{}",
+            "a".repeat(1000),
+            "b".repeat(500),
+            "c".repeat(600)
+        );
+
+        let parts = split_message(&text, 2000);
+
+        assert_eq!(
+            rejoin(&parts),
+            format!(
+                "{}\n{}\n{}",
+                "a".repeat(1000),
+                "b".repeat(500),
+                "c".repeat(600)
+            )
+        );
+    }
+
+    #[test]
+    fn cut_note_is_removed_from_a_posted_part() {
+        let text = format!("{}\n{}", "a".repeat(1900), "b".repeat(1900));
+
+        let parts = answer_parts(&response(&text, Finish::Stop), 1);
+
+        assert_eq!(without_cut_note(&parts[0]), "a".repeat(1900));
+        assert_eq!(without_cut_note("answer"), "answer");
     }
 
     #[test]
