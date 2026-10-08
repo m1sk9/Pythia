@@ -22,7 +22,7 @@ use crate::orchestrator::AppState;
 use std::{sync::Arc, time::Duration};
 use tracing_subscriber::EnvFilter;
 use twilight_cache_inmemory::{DefaultInMemoryCache, ResourceType};
-use twilight_gateway::{Intents, Shard, ShardId};
+use twilight_gateway::{ConfigBuilder, Intents, Shard, ShardId};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -102,11 +102,14 @@ async fn main() -> anyhow::Result<()> {
         scheduler: Default::default(),
         semaphore: tokio::sync::Semaphore::new(config.limits.max_concurrent),
     });
-    let shard = Shard::new(
-        ShardId::ONE,
+    let mut shard_config = ConfigBuilder::new(
         envs.discord_api_token.clone(),
         Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT,
     );
+    if let Some(text) = config.activity_text() {
+        shard_config = shard_config.presence(gateway::presence(text));
+    }
+    let shard = Shard::with_config(ShardId::ONE, shard_config.build());
 
     gateway::run(shard, state).await
 }

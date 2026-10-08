@@ -12,6 +12,10 @@ use std::sync::{Arc, OnceLock};
 use twilight_gateway::{CloseFrame, Event, EventTypeFlags, Shard, StreamExt};
 use twilight_model::{
     channel::{Channel, ChannelType, Message, message::MessageType},
+    gateway::{
+        payload::outgoing::update_presence::UpdatePresencePayload,
+        presence::{Activity, ActivityType, MinimalActivity, Status},
+    },
     id::{
         Id,
         marker::{ChannelMarker, UserMarker},
@@ -24,6 +28,27 @@ static BOT_USER_ID: OnceLock<Id<UserMarker>> = OnceLock::new();
 /// Returns the bot's user id, or `None` before the first Ready event.
 pub fn bot_user_id() -> Option<Id<UserMarker>> {
     BOT_USER_ID.get().copied()
+}
+
+/// An online presence with `text` as a custom status, sent when identifying.
+pub fn presence(text: String) -> UpdatePresencePayload {
+    // A custom status shows `state` as is; other activity types prefix the
+    // name with "Playing" and the like.
+    let activity = Activity {
+        state: Some(text),
+        ..MinimalActivity {
+            kind: ActivityType::Custom,
+            name: "Custom Status".to_string(),
+            url: None,
+        }
+        .into()
+    };
+    UpdatePresencePayload {
+        activities: vec![activity],
+        afk: false,
+        since: None,
+        status: Status::Online,
+    }
 }
 
 /// What the trigger decision needs to know about a channel.
@@ -294,6 +319,19 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn presence_shows_the_text_as_an_online_custom_status() {
+        let presence = presence("vendor/model".to_string());
+
+        assert_eq!(presence.status, Status::Online);
+        assert!(!presence.afk);
+        let [activity] = presence.activities.as_slice() else {
+            panic!("expected one activity, got {:?}", presence.activities);
+        };
+        assert_eq!(activity.kind, ActivityType::Custom);
+        assert_eq!(activity.state.as_deref(), Some("vendor/model"));
+    }
 
     const BOT: u64 = 1000;
     const ALICE: u64 = 2000;

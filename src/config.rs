@@ -97,14 +97,21 @@ struct RawConfig {
     log: LogConfig,
 }
 
-/// Activity display.
+/// Discord's limit on a custom status.
+const MAX_ACTIVITY_CHARS: usize = 128;
+
+/// What Pythia shows as its custom status.
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ActivityDisplay {
+    /// `llm.model`.
     #[default]
     Model,
+    /// `Pythia v{version}`.
     Version,
+    /// `discord.activity_custom`.
     Custom,
+    /// No activity.
     Disabled,
 }
 
@@ -115,6 +122,7 @@ pub struct DiscordConfig {
     /// Guilds where Pythia responds. Empty means nowhere.
     pub allowed_guilds: Vec<u64>,
     pub activity_display: ActivityDisplay,
+    /// Required when `activity_display` is `custom`.
     pub activity_custom: Option<String>,
 }
 
@@ -399,6 +407,23 @@ impl RawConfig {
             return invalid("`response.max_parts` must be at least 1".to_string());
         }
 
+        if self.discord.activity_display == ActivityDisplay::Custom {
+            match self.discord.activity_custom.as_deref() {
+                None | Some("") => {
+                    return invalid(
+                        "`discord.activity_custom` is required when `discord.activity_display` is \"custom\""
+                            .to_string(),
+                    );
+                }
+                Some(text) if text.chars().count() > MAX_ACTIVITY_CHARS => {
+                    return invalid(format!(
+                        "`discord.activity_custom` must be at most {MAX_ACTIVITY_CHARS} characters"
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+
         Ok(PythiaConfig {
             discord: self.discord,
             llm: LlmConfig {
@@ -442,6 +467,16 @@ impl PythiaConfig {
         CONFIG
             .set(buffer.parse()?)
             .map_err(|_| PythiaConfigError::Set)
+    }
+
+    /// The text shown as Pythia's activity, or `None` when it is disabled.
+    pub fn activity_text(&self) -> Option<String> {
+        match self.discord.activity_display {
+            ActivityDisplay::Model => Some(self.llm.model.clone()),
+            ActivityDisplay::Version => Some(format!("Pythia v{}", env!("CARGO_PKG_VERSION"))),
+            ActivityDisplay::Custom => self.discord.activity_custom.clone(),
+            ActivityDisplay::Disabled => None,
+        }
     }
 
     /// Returns a reference to the global configuration.
@@ -640,6 +675,47 @@ mod tests {
                 "{key}: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn activity_text_follows_activity_display() {
+        let text = |discord: &str| {
+            format!("[discord]\n{discord}\n[llm]\nmodel = \"vendor/model\"")
+                .parse::<PythiaConfig>()
+                .unwrap()
+                .activity_text()
+        };
+
+        assert_eq!(text(""), Some("vendor/model".to_string()));
+        assert_eq!(
+            text("activity_display = \"version\""),
+            Some(format!("Pythia v{}", env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(
+            text("activity_display = \"custom\"\nactivity_custom = \"Running!\""),
+            Some("Running!".to_string())
+        );
+        assert_eq!(text("activity_display = \"disabled\""), None);
+    }
+
+    #[test]
+    fn custom_activity_without_text_is_rejected() {
+        for custom in ["", "activity_custom = \"\""] {
+            let toml =
+                format!("[discord]\nactivity_display = \"custom\"\n{custom}\n[llm]\nmodel = \"x\"");
+            let msg = validation_message(toml.parse());
+            assert!(msg.contains("discord.activity_custom"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn custom_activity_over_discords_limit_is_rejected() {
+        let toml = format!(
+            "[discord]\nactivity_display = \"custom\"\nactivity_custom = \"{}\"\n[llm]\nmodel = \"x\"",
+            "a".repeat(MAX_ACTIVITY_CHARS + 1)
+        );
+        let msg = validation_message(toml.parse());
+        assert!(msg.contains("discord.activity_custom"), "{msg}");
     }
 
     #[test]
