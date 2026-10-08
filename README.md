@@ -29,6 +29,7 @@ docker pull ghcr.io/m1sk9/pythia:v3.0.0
 
 - **One thread is one conversation.** Mention Pythia in a channel and it opens a thread from your message and answers there. Keep talking in the thread without mentioning it; it reads the thread history every time, so it keeps no database and survives restarts.
 - **Joins existing threads.** Mention Pythia in any thread and it answers there too, and keeps answering without further mentions.
+- **Stays out of side conversations.** In a thread, a message that replies to another person is left to that person; reply to Pythia's message, post without replying, or mention it to get an answer.
 - **One answer at a time per thread.** Messages sent while Pythia is answering are covered together by its next answer.
 - **Reads screenshots.** With a model that accepts images, recent PNG / JPEG / WebP / GIF attachments are sent along with the text. Images are downscaled to `attachments.max_image_edge` px on the longest side before they are sent, so large screenshots still fit and cost fewer tokens.
 - **Allow-listed servers only.** Pythia answers only in the guilds listed in `discord.allowed_guilds`.

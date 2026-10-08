@@ -407,6 +407,10 @@ impl RawConfig {
             return invalid("`limits.max_concurrent` must be at least 1".to_string());
         }
 
+        if self.context.max_chars == 0 {
+            return invalid("`context.max_chars` must be at least 1".to_string());
+        }
+
         if !(1..=100).contains(&self.context.max_messages) {
             return invalid(
                 "`context.max_messages` must be between 1 and 100 (Discord's limit per request)"
@@ -629,6 +633,13 @@ mod tests {
         let toml = "[llm]\nmodel = \"x\"\n[limits]\nmax_concurrent = 0";
         let msg = validation_message(toml.parse());
         assert!(msg.contains("limits.max_concurrent"), "{msg}");
+    }
+
+    #[test]
+    fn zero_max_chars_is_rejected() {
+        let toml = "[llm]\nmodel = \"x\"\n[context]\nmax_chars = 0";
+        let msg = validation_message(toml.parse());
+        assert!(msg.contains("context.max_chars"), "{msg}");
     }
 
     #[test]
