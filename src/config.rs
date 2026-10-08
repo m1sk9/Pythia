@@ -473,7 +473,7 @@ impl PythiaConfig {
     pub fn activity_text(&self) -> Option<String> {
         match self.discord.activity_display {
             ActivityDisplay::Model => Some(self.llm.model.clone()),
-            ActivityDisplay::Version => Some(format!("Pythia v{}", env!("CARGO_PKG_VERSION"))),
+            ActivityDisplay::Version => Some(format!("Running v{}", env!("CARGO_PKG_VERSION"))),
             ActivityDisplay::Custom => self.discord.activity_custom.clone(),
             ActivityDisplay::Disabled => None,
         }
