@@ -15,7 +15,7 @@ mod thread;
 use crate::attachments::ImagePolicy;
 use crate::config::{EnvConfig, LogFormat, PythiaConfig};
 use crate::llm::{
-    ModelCapabilities, ReasoningEffort,
+    ReasoningEffort,
     openrouter::{self, OpenRouterClient},
 };
 use crate::orchestrator::AppState;
@@ -50,37 +50,45 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     // The model list is off the hot path: an outage must not keep the bot down,
     // and a wrong model id still surfaces on the first chat request.
-    let capabilities = openrouter::fetch_capabilities(&http, &config.llm.model)
-        .await
-        .unwrap_or_else(|error| {
+    let capabilities = match openrouter::fetch_capabilities(&http, &config.llm.model).await {
+        Ok(capabilities) => Some(capabilities),
+        Err(error) => {
             tracing::warn!(
                 error = format!("{error:#}"),
                 "failed to look up model capabilities; disabling images, tools, and reasoning effort"
             );
-            ModelCapabilities {
-                accepts_images: false,
-                accepts_tools: false,
-                reasoning: None,
-            }
-        });
-    let images_enabled = config.attachments.images && capabilities.accepts_images;
+            None
+        }
+    };
+    let images_enabled = config.attachments.images
+        && capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.accepts_images);
     let mut tools = config.tools.server_tools(&config.thread.timezone);
-    if !tools.is_empty() && !capabilities.accepts_tools {
-        tracing::warn!(model = %config.llm.model, "model does not support tools; disabling them");
-        tools.clear();
+    match &capabilities {
+        None => tools.clear(),
+        Some(capabilities) if !tools.is_empty() && !capabilities.accepts_tools => {
+            tracing::warn!(model = %config.llm.model, "model does not support tools; disabling them");
+            tools.clear();
+        }
+        Some(_) => {}
     }
-    let mut reasoning_effort = config.llm.reasoning_effort;
-    if let Some(effort) = reasoning_effort
-        && let Some(reason) = capabilities.reasoning_effort_problem(effort)
+    let reasoning_effort = match capabilities
+        .as_ref()
+        .map(|capabilities| capabilities.reasoning_effort_to_send(config.llm.reasoning_effort))
     {
-        tracing::warn!(
-            model = %config.llm.model,
-            effort = effort.as_str(),
-            reason,
-            "leaving reasoning to the model's default"
-        );
-        reasoning_effort = None;
-    }
+        None => None,
+        Some(Ok(effort)) => effort,
+        Some(Err(reason)) => {
+            tracing::warn!(
+                model = %config.llm.model,
+                effort = config.llm.reasoning_effort.map(ReasoningEffort::as_str),
+                reason,
+                "leaving reasoning to the model's default"
+            );
+            None
+        }
+    };
     tracing::info!(
         model = %config.llm.model,
         images = images_enabled,

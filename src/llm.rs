@@ -193,8 +193,19 @@ pub struct ReasoningSupport {
 }
 
 impl ModelCapabilities {
+    /// The effort to send for the `configured` one, or why it has to be dropped.
+    pub fn reasoning_effort_to_send(
+        &self,
+        configured: Option<ReasoningEffort>,
+    ) -> Result<Option<ReasoningEffort>, String> {
+        match configured.map(|effort| (effort, self.reasoning_effort_problem(effort))) {
+            Some((_, Some(problem))) => Err(problem),
+            _ => Ok(configured),
+        }
+    }
+
     /// Why `effort` cannot be sent to this model, or `None` when it can.
-    pub fn reasoning_effort_problem(&self, effort: ReasoningEffort) -> Option<String> {
+    fn reasoning_effort_problem(&self, effort: ReasoningEffort) -> Option<String> {
         let Some(support) = &self.reasoning else {
             return Some("model does not support reasoning".to_owned());
         };
@@ -448,5 +459,22 @@ mod tests {
             .unwrap();
         assert!(problem.contains("max, high, low"), "{problem}");
         assert_eq!(listed.reasoning_effort_problem(ReasoningEffort::None), None);
+    }
+
+    #[test]
+    fn configured_reasoning_effort_is_sent_unless_the_model_rejects_it() {
+        let unsupported = capabilities(None);
+        assert_eq!(unsupported.reasoning_effort_to_send(None), Ok(None));
+        let problem = unsupported
+            .reasoning_effort_to_send(Some(ReasoningEffort::Low))
+            .unwrap_err();
+        assert!(problem.contains("does not support reasoning"), "{problem}");
+
+        let supported = capabilities(Some(ReasoningSupport::default()));
+        assert_eq!(supported.reasoning_effort_to_send(None), Ok(None));
+        assert_eq!(
+            supported.reasoning_effort_to_send(Some(ReasoningEffort::Low)),
+            Ok(Some(ReasoningEffort::Low))
+        );
     }
 }
