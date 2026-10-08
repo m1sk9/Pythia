@@ -56,7 +56,7 @@ impl FitError {
 /// turning the rest into PNG unless only JPEG fits.
 pub fn fit(bytes: Vec<u8>, limits: &FitLimits) -> Result<Fitted, FitError> {
     let source_mime = sniff_image(&bytes).ok_or(FitError::NotAnImage)?;
-    let mut decoder = decoder(&bytes)?;
+    let mut decoder = decoder(&bytes, source_mime)?;
     let (width, height) = decoder.dimensions();
     // Providers ignore EXIF, so a rotated photo has to be re-encoded upright.
     // An unreadable EXIF chunk only loses the rotation; the pixels still decode.
@@ -115,13 +115,14 @@ fn decode_limits() -> Limits {
     limits
 }
 
-fn decoder(bytes: &[u8]) -> Result<impl ImageDecoder + '_, FitError> {
-    let mut reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| FitError::Decode(ImageError::IoError(error)))?;
-    if reader.format().is_none() {
-        return Err(FitError::NotAnImage);
-    }
+fn decoder<'a>(bytes: &'a [u8], mime: &str) -> Result<impl ImageDecoder + 'a, FitError> {
+    let format = match mime {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/gif" => ImageFormat::Gif,
+        _ => ImageFormat::WebP,
+    };
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(decode_limits());
     reader.into_decoder().map_err(FitError::from_decode)
 }
