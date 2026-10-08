@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.1](https://github.com/m1sk9/Pythia/compare/v3.2.0...v3.2.1) (2026-10-08)
+
+
+### CI
+
+* Retrigger the release workflow for v3.2.0 ([#344](https://github.com/m1sk9/Pythia/issues/344)) ([b21a3bb](https://github.com/m1sk9/Pythia/commit/b21a3bb4fac6fa8a41827fcebb2c15569dcc20ef))
+
 ## [3.2.0](https://github.com/m1sk9/Pythia/compare/v3.1.0...v3.2.0) (2026-10-08)
 
 
