@@ -107,7 +107,7 @@ pub enum ActivityDisplay {
     /// `llm.model`.
     #[default]
     Model,
-    /// `Pythia v{version}`.
+    /// `Running v{version}`.
     Version,
     /// `discord.activity_custom`.
     Custom,
@@ -689,7 +689,7 @@ mod tests {
         assert_eq!(text(""), Some("vendor/model".to_string()));
         assert_eq!(
             text("activity_display = \"version\""),
-            Some(format!("Pythia v{}", env!("CARGO_PKG_VERSION")))
+            Some(format!("Running v{}", env!("CARGO_PKG_VERSION")))
         );
         assert_eq!(
             text("activity_display = \"custom\"\nactivity_custom = \"Running!\""),
