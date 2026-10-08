@@ -97,12 +97,25 @@ struct RawConfig {
     log: LogConfig,
 }
 
+/// Activity display.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ActivityDisplay {
+    #[default]
+    Model,
+    Version,
+    Custom,
+    Disabled,
+}
+
 /// Discord-related configuration.
 #[derive(Deserialize, Debug, Default)]
 #[serde(default)]
 pub struct DiscordConfig {
     /// Guilds where Pythia responds. Empty means nowhere.
     pub allowed_guilds: Vec<u64>,
+    pub activity_display: ActivityDisplay,
+    pub activity_custom: Option<String>,
 }
 
 /// LLM provider.
@@ -457,6 +470,8 @@ mod tests {
         let config: PythiaConfig = include_str!("../config/config.toml").parse().unwrap();
 
         assert_eq!(config.discord.allowed_guilds, vec![123456789012345678]);
+        assert_eq!(config.discord.activity_display, ActivityDisplay::Model);
+        assert_eq!(config.discord.activity_custom, None);
         assert_eq!(config.llm.provider, LlmProvider::OpenRouter);
         assert_eq!(config.llm.model, "<openrouter model id>");
         assert_eq!(config.llm.system_prompt, DEFAULT_SYSTEM_PROMPT);

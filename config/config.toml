@@ -5,6 +5,11 @@
 [discord]
 ## Guilds where Pythia responds. Empty means nowhere.
 allowed_guilds = [123456789012345678]
+## Activity display: The type of string displayed in Pythia's activity
+## "model" (show model id), "version" (Pythia's build version) and "custom"
+activity_display = "model"
+## Text displayed when customizing
+# activity_custom = "Running!"
 
 [llm]
 ## v3.0.0 supports OpenRouter only.
