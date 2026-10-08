@@ -134,7 +134,8 @@ impl OpenRouterClient {
     }
 }
 
-/// Looks up whether `model` accepts images via OpenRouter's public model list.
+/// Looks up what `model` accepts (images, tools, reasoning) via OpenRouter's
+/// public model list.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_capabilities(
     http: &reqwest::Client,
@@ -629,8 +630,7 @@ struct WireModel {
 #[derive(Deserialize, Default)]
 struct WireModelReasoning {
     supported_efforts: Option<Vec<String>>,
-    #[serde(default)]
-    mandatory: bool,
+    mandatory: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -665,14 +665,22 @@ fn parse_capabilities(body: &[u8], model: &str) -> anyhow::Result<ModelCapabilit
         .iter()
         .any(|p| p == "reasoning")
         .then(|| {
-            let wire: WireModelReasoning = entry
-                .reasoning
-                .and_then(|value| serde_json::from_value(value).ok())
-                .unwrap_or_default();
+            let wire = match entry.reasoning.map(serde_json::from_value) {
+                None => WireModelReasoning::default(),
+                Some(Ok(wire)) => wire,
+                Some(Err(error)) => {
+                    tracing::warn!(
+                        model,
+                        %error,
+                        "unexpected reasoning object in the model list; assuming no effort list and optional reasoning"
+                    );
+                    WireModelReasoning::default()
+                }
+            };
             ReasoningSupport {
                 // An empty list would reject every effort.
                 supported_efforts: wire.supported_efforts.filter(|list| !list.is_empty()),
-                mandatory: wire.mandatory,
+                mandatory: wire.mandatory.unwrap_or(false),
             }
         });
     Ok(ModelCapabilities {
@@ -1445,6 +1453,22 @@ mod tests {
     }
 
     #[test]
+    fn null_mandatory_keeps_the_rest_of_the_reasoning_object() {
+        let body = br#"{"data": [
+            {"id": "odd/model", "supported_parameters": ["reasoning"],
+             "reasoning": {"mandatory": null, "supported_efforts": ["high", "low"]}}
+        ]}"#;
+
+        assert_eq!(
+            parse_capabilities(body, "odd/model").unwrap().reasoning,
+            Some(ReasoningSupport {
+                supported_efforts: Some(vec!["high".into(), "low".into()]),
+                mandatory: false,
+            })
+        );
+    }
+
+    #[test]
     fn routing_variant_uses_the_capabilities_of_its_base_model() {
         let body = br#"{"data": [
             {"id": "vision/model", "architecture": {"input_modalities": ["text", "image"]}},
@@ -1534,7 +1558,9 @@ mod tests {
             OpenRouterClient::new(http, api_key, model, "Reply with one word.".to_string(), 2);
         let request = ChatRequest {
             messages: vec![user(Content::Text("ping".to_string()))],
-            max_output_tokens: 1024,
+            // Budget-based providers reserve at least 1024 reasoning tokens and
+            // some reject a limit that is not above that reservation.
+            max_output_tokens: 2048,
             tools: Vec::new(),
             reasoning_effort: Some(effort),
         };

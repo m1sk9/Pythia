@@ -198,9 +198,11 @@ impl ModelCapabilities {
         &self,
         configured: Option<ReasoningEffort>,
     ) -> Result<Option<ReasoningEffort>, String> {
-        match configured.map(|effort| (effort, self.reasoning_effort_problem(effort))) {
-            Some((_, Some(problem))) => Err(problem),
-            _ => Ok(configured),
+        match configured {
+            None => Ok(None),
+            Some(effort) => self
+                .reasoning_effort_problem(effort)
+                .map_or(Ok(Some(effort)), Err),
         }
     }
 
