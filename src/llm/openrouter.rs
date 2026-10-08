@@ -618,7 +618,9 @@ struct WireModel {
     architecture: Option<WireArchitecture>,
     #[serde(default)]
     supported_parameters: Vec<String>,
-    reasoning: Option<WireModelReasoning>,
+    // Decoded only for the configured model, so that an unexpected shape on
+    // another model cannot fail the whole list and disable images and tools.
+    reasoning: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -660,7 +662,10 @@ fn parse_capabilities(body: &[u8], model: &str) -> anyhow::Result<ModelCapabilit
         .iter()
         .any(|p| p == "reasoning")
         .then(|| {
-            let wire = entry.reasoning.unwrap_or_default();
+            let wire: WireModelReasoning = entry
+                .reasoning
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default();
             ReasoningSupport {
                 // An empty list would reject every effort.
                 supported_efforts: wire.supported_efforts.filter(|list| !list.is_empty()),
@@ -1417,6 +1422,20 @@ mod tests {
             })
         );
         assert_eq!(reasoning("plain/model"), None);
+    }
+
+    #[test]
+    fn unexpected_reasoning_object_does_not_hide_the_models_capabilities() {
+        let body = br#"{"data": [
+            {"id": "odd/model", "supported_parameters": ["reasoning"], "reasoning": {"mandatory": null}},
+            {"id": "vision/model", "architecture": {"input_modalities": ["image"]},
+             "supported_parameters": ["tools", "reasoning"], "reasoning": "yes"}
+        ]}"#;
+
+        let capabilities = parse_capabilities(body, "vision/model").unwrap();
+        assert!(capabilities.accepts_images);
+        assert!(capabilities.accepts_tools);
+        assert_eq!(capabilities.reasoning, Some(ReasoningSupport::default()));
     }
 
     #[test]
