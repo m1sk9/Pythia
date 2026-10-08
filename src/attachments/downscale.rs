@@ -3,7 +3,7 @@
 use super::sniff_image;
 use image::{
     DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits, RgbImage,
-    codecs::jpeg::JpegEncoder, metadata::Orientation,
+    codecs::jpeg::JpegEncoder, imageops::FilterType, metadata::Orientation,
 };
 use std::io::Cursor;
 
@@ -49,14 +49,21 @@ impl FitError {
     }
 }
 
-/// Returns `bytes` untouched when they are within both limits; otherwise
-/// downscales the longest side to `max_edge` and re-encodes, keeping JPEG
-/// sources as JPEG and turning the rest into PNG unless only JPEG fits.
+/// Returns `bytes` untouched when they are within both limits and need no
+/// rotation; otherwise applies the EXIF orientation, downscales the longest
+/// side to `max_edge`, and re-encodes, keeping JPEG sources as JPEG and
+/// turning the rest into PNG unless only JPEG fits.
 pub fn fit(bytes: Vec<u8>, limits: &FitLimits) -> Result<Fitted, FitError> {
     let source_mime = sniff_image(&bytes).ok_or(FitError::NotAnImage)?;
-    let decoder = decoder(&bytes)?;
+    let mut decoder = decoder(&bytes)?;
     let (width, height) = decoder.dimensions();
-    if width.max(height) <= limits.max_edge && bytes.len() <= limits.max_bytes {
+    // Providers ignore EXIF, so a rotated photo has to be re-encoded upright.
+    // An unreadable EXIF chunk only loses the rotation; the pixels still decode.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    if width.max(height) <= limits.max_edge
+        && bytes.len() <= limits.max_bytes
+        && orientation == Orientation::NoTransforms
+    {
         drop(decoder);
         return Ok(Fitted {
             mime: source_mime,
@@ -65,15 +72,15 @@ pub fn fit(bytes: Vec<u8>, limits: &FitLimits) -> Result<Fitted, FitError> {
         });
     }
 
-    let image = decode(decoder)?;
+    let image = decode(decoder, orientation)?;
     let longest = image.width().max(image.height());
     let lossless = source_mime != "image/jpeg";
     let mut max_edge = limits.max_edge.min(longest);
     for _ in 0..=MAX_SHRINK_STEPS {
-        let thumbnail;
+        let shrunk;
         let candidate = if longest > max_edge {
-            thumbnail = image.thumbnail(max_edge, max_edge);
-            &thumbnail
+            shrunk = shrink(&image, longest, max_edge);
+            &shrunk
         } else {
             &image
         };
@@ -87,6 +94,16 @@ pub fn fit(bytes: Vec<u8>, limits: &FitLimits) -> Result<Fitted, FitError> {
         max_edge = (max_edge / 2).max(1);
     }
     Err(FitError::TooLarge)
+}
+
+/// `thumbnail` is a fast box filter, but it drops or doubles thin lines when
+/// the scale is close to 1, so gentle reductions use a triangle filter.
+fn shrink(image: &DynamicImage, longest: u32, max_edge: u32) -> DynamicImage {
+    if max_edge.saturating_mul(2) > longest {
+        image.resize(max_edge, max_edge, FilterType::Triangle)
+    } else {
+        image.thumbnail(max_edge, max_edge)
+    }
 }
 
 fn decode_limits() -> Limits {
@@ -108,9 +125,7 @@ fn decoder(bytes: &[u8]) -> Result<impl ImageDecoder + '_, FitError> {
     reader.into_decoder().map_err(FitError::from_decode)
 }
 
-fn decode(mut decoder: impl ImageDecoder) -> Result<DynamicImage, FitError> {
-    // An unreadable EXIF chunk only loses the rotation; the pixels still decode.
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+fn decode(decoder: impl ImageDecoder, orientation: Orientation) -> Result<DynamicImage, FitError> {
     // Not every decoder honours `max_alloc`, so the output buffer is checked up front.
     decode_limits()
         .reserve(decoder.total_bytes())
@@ -309,10 +324,9 @@ mod tests {
         assert!(matches!(fit(png, &limits), Err(FitError::TooLarge)));
     }
 
-    #[test]
-    fn exif_orientation_is_applied_before_re_encoding() {
+    fn jpeg_rotated_90_cw(width: u32, height: u32) -> Vec<u8> {
         let jpeg = encoded(
-            DynamicImage::ImageRgb8(gradient(400, 200).to_rgb8()),
+            DynamicImage::ImageRgb8(gradient(width, height).to_rgb8()),
             ImageFormat::Jpeg,
         );
         let exif_rotate_90_cw: &[u8] = &[
@@ -320,15 +334,41 @@ mod tests {
             0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00,
             0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        let rotated = [&jpeg[..2], exif_rotate_90_cw, &jpeg[2..]].concat();
+        [&jpeg[..2], exif_rotate_90_cw, &jpeg[2..]].concat()
+    }
+
+    #[test]
+    fn exif_orientation_is_applied_before_re_encoding() {
         let limits = FitLimits {
             max_edge: 100,
             ..ROOMY
         };
 
-        let fitted = fit(rotated, &limits).unwrap();
+        let fitted = fit(jpeg_rotated_90_cw(400, 200), &limits).unwrap();
 
         assert_eq!(dimensions(&fitted.bytes), (50, 100));
+    }
+
+    #[test]
+    fn rotated_images_within_both_limits_are_re_encoded_upright() {
+        let fitted = fit(jpeg_rotated_90_cw(400, 200), &ROOMY).unwrap();
+
+        assert_eq!(fitted.mime, "image/jpeg");
+        assert_eq!(fitted.resized_from, Some((400, 200)));
+        assert_eq!(dimensions(&fitted.bytes), (200, 400));
+    }
+
+    #[test]
+    fn slight_downscales_keep_the_aspect_ratio() {
+        let png = encoded(gradient(2400, 1200), ImageFormat::Png);
+        let limits = FitLimits {
+            max_edge: 2000,
+            ..ROOMY
+        };
+
+        let fitted = fit(png, &limits).unwrap();
+
+        assert_eq!(dimensions(&fitted.bytes), (2000, 1000));
     }
 
     #[test]

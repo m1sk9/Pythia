@@ -15,7 +15,7 @@ use twilight_model::{
 };
 
 /// Per-download timeout, independent of the LLM timeout on the shared client.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Decoding is bounded per image only, so concurrent turns could otherwise
 /// hold up to `max_images * limits.max_concurrent` full-size frames at once.
@@ -175,7 +175,7 @@ pub async fn fetch_images(
                             from = %format!("{width}x{height}"),
                             bytes = fitted.bytes.len(),
                             mime = fitted.mime,
-                            "downscaled image"
+                            "re-encoded image"
                         );
                     }
                     ImageOutcome::fetched(fitted)
