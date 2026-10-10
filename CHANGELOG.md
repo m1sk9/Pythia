@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.2.2](https://github.com/m1sk9/Pythia/compare/v3.2.1...v3.2.2) (2026-10-10)
+
+
+### Miscellaneous
+
+* **deps:** update rust crate serde_json to v1.0.152 ([#348](https://github.com/m1sk9/Pythia/issues/348)) ([a3915b5](https://github.com/m1sk9/Pythia/commit/a3915b5f4fad8d5bcdb24556ec1dcfbdb81fdd78))
+* **deps:** update rust crate toml to v1.1.8 ([#346](https://github.com/m1sk9/Pythia/issues/346)) ([f70efce](https://github.com/m1sk9/Pythia/commit/f70efcec1ba48adbecb266516719f32e92f1d533))
+
 ## [3.2.1](https://github.com/m1sk9/Pythia/compare/v3.2.0...v3.2.1) (2026-10-08)
 
 

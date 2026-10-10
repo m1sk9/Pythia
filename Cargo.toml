@@ -1,6 +1,6 @@
 [package]
 name = "pythia"
-version = "3.2.1"
+version = "3.2.2"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
