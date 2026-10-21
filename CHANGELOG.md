@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.2.2](https://github.com/m1sk9/Pythia/compare/v3.2.1...v3.2.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **docker:** move base images to Debian 13 distroless to drop the compromised eMudhra cross-sign root ([#353](https://github.com/m1sk9/Pythia/issues/353)) ([bbf8154](https://github.com/m1sk9/Pythia/commit/bbf815480a8547f36c67e10ef1b670672628d323))
+
+
+### Miscellaneous
+
+* **deps:** update rust crate serde_json to v1.0.152 ([#348](https://github.com/m1sk9/Pythia/issues/348)) ([a3915b5](https://github.com/m1sk9/Pythia/commit/a3915b5f4fad8d5bcdb24556ec1dcfbdb81fdd78))
+* **deps:** update rust crate serde_json to v1.0.154 ([#349](https://github.com/m1sk9/Pythia/issues/349)) ([deb65ef](https://github.com/m1sk9/Pythia/commit/deb65ef49fd93051bd2dd565faae902bf88c7840))
+* **deps:** update rust crate tokio to v1.53.3 ([#350](https://github.com/m1sk9/Pythia/issues/350)) ([a5613d3](https://github.com/m1sk9/Pythia/commit/a5613d398d1b511111324c03caae43585ef2bd4b))
+* **deps:** update rust crate tokio to v1.54.0 ([#351](https://github.com/m1sk9/Pythia/issues/351)) ([b5b1cb1](https://github.com/m1sk9/Pythia/commit/b5b1cb104c0d5633705e73051c01f77632792d02))
+* **deps:** update rust crate toml to v1.1.8 ([#346](https://github.com/m1sk9/Pythia/issues/346)) ([f70efce](https://github.com/m1sk9/Pythia/commit/f70efcec1ba48adbecb266516719f32e92f1d533))
+* **deps:** update swatinem/rust-cache action to v2.9.3 ([#352](https://github.com/m1sk9/Pythia/issues/352)) ([6dfeb89](https://github.com/m1sk9/Pythia/commit/6dfeb896da1fce2f2d07f068f0215c85151b6823))
+
 ## [3.2.1](https://github.com/m1sk9/Pythia/compare/v3.2.0...v3.2.1) (2026-10-08)
 
 
