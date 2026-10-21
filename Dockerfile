@@ -1,4 +1,4 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.99.0-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.99.0-trixie AS chef
 WORKDIR /root/app
 
 FROM chef AS planner
@@ -13,7 +13,7 @@ FROM cook AS builder
 COPY . .
 RUN cargo build --release --bin pythia
 
-FROM gcr.io/distroless/cc-debian12 AS runner
+FROM gcr.io/distroless/cc-debian13 AS runner
 
 COPY --from=builder --chown=root:root /root/app/target/release/pythia /
 
