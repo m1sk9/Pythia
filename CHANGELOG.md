@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.2.3](https://github.com/m1sk9/Pythia/compare/v3.2.2...v3.2.3) (2026-10-23)
+
+
+### Miscellaneous
+
+* **deps:** update rust crate tokio to v1.54.1 ([#354](https://github.com/m1sk9/Pythia/issues/354)) ([82b49ca](https://github.com/m1sk9/Pythia/commit/82b49cacb5757a58c379214a1d620f789e4278d1))
+* **deps:** update taiki-e/install-action digest to a4d3f3f ([#320](https://github.com/m1sk9/Pythia/issues/320)) ([c07c14f](https://github.com/m1sk9/Pythia/commit/c07c14f181b68825ef21b70dc8aa6887a176ea2b))
+
 ## [3.2.2](https://github.com/m1sk9/Pythia/compare/v3.2.1...v3.2.2) (2026-10-21)
 
 
