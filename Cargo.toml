@@ -25,7 +25,7 @@ toml = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 twilight-cache-inmemory = "0.17"
-twilight-gateway = "0.17"
+twilight-gateway = "0.18"
 twilight-http = "0.17"
 twilight-model = "0.17"
 twilight-util = { version = "0.17", features = ["builder"] }
