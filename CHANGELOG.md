@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.2.4](https://github.com/m1sk9/Pythia/compare/v3.2.3...v3.2.4) (2026-11-06)
+
+
+### Miscellaneous
+
+* **deps:** update rust crate jiff to v0.2.39 ([#364](https://github.com/m1sk9/Pythia/issues/364)) ([4cc9ce0](https://github.com/m1sk9/Pythia/commit/4cc9ce0e8cca6e56dabc52f3d12b955294bbb4bf))
+* **deps:** update rust crate toml to v1.2.0 ([#366](https://github.com/m1sk9/Pythia/issues/366)) ([3c5dde1](https://github.com/m1sk9/Pythia/commit/3c5dde1ac3c2ee8f9cdbc00220f8affcda334ad0))
+* **deps:** update rust crate toml to v1.2.1 ([#367](https://github.com/m1sk9/Pythia/issues/367)) ([6d8b104](https://github.com/m1sk9/Pythia/commit/6d8b10451be8e70b4c3e12bf20d6732970f222bb))
+
 ## [3.2.3](https://github.com/m1sk9/Pythia/compare/v3.2.2...v3.2.3) (2026-11-01)
 
 
