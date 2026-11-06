@@ -24,7 +24,7 @@ tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "sync", "ti
 toml = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-twilight-cache-inmemory = "0.17"
+twilight-cache-inmemory = "0.18"
 twilight-gateway = "0.17"
 twilight-http = "0.17"
 twilight-model = "0.17"
