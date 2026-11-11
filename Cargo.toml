@@ -28,7 +28,7 @@ twilight-cache-inmemory = "0.17"
 twilight-gateway = "0.17"
 twilight-http = "0.17"
 twilight-model = "0.17"
-twilight-util = { version = "0.17", features = ["builder"] }
+twilight-util = { version = "0.18", features = ["builder"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
